@@ -39,12 +39,5 @@ class ProfileService:
         return self.get_profile(fresh_user)
 
     def change_password(self, user, current_password: str, new_password: str):
-        raw = self.user_repo.find_raw_by_email(user.email)
-        if not raw:
-            raise PermissionError("Cuenta inexistente.")
-        from django.contrib.auth.hashers import check_password
-        if not check_password(current_password, raw["password_hash"]):
-            raise PermissionError("La contrasena actual es incorrecta.")
-        self.user_repo.update_password(user.id, new_password)
-        self.profile_repo.log_event("password_changed", {"user_id": user.id})
-        return {"message": "Contrasena actualizada correctamente."}
+        self.profile_repo.log_event("password_change_requested_in_django", {"user_id": user.id})
+        raise NotImplementedError("Las contrasenas se administran con Supabase Auth desde el cliente.")

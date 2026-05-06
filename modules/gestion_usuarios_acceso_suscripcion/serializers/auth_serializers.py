@@ -18,13 +18,14 @@ def validate_password_rules(password: str):
 
 
 class RegisterSerializer(serializers.Serializer):
+    supabase_user_id = serializers.UUIDField()
     first_name = serializers.CharField(max_length=100)
     last_name = serializers.CharField(max_length=100)
     email = serializers.EmailField()
-    phone = serializers.CharField(max_length=30)
+    phone = serializers.CharField(max_length=30, required=False, allow_blank=True)
     role = serializers.ChoiceField(choices=ROLE_CHOICES)
-    password = serializers.CharField(write_only=True)
-    password_confirm = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, required=False)
+    password_confirm = serializers.CharField(write_only=True, required=False)
     accept_terms = serializers.BooleanField()
     chef_specialties = serializers.CharField(required=False, allow_blank=True)
     chef_latitude = serializers.FloatField(required=False)
@@ -34,9 +35,13 @@ class RegisterSerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs["accept_terms"]:
             raise serializers.ValidationError({"accept_terms": "Debes aceptar terminos y condiciones."})
-        if attrs["password"] != attrs["password_confirm"]:
-            raise serializers.ValidationError({"password_confirm": "La confirmacion no coincide."})
-        validate_password_rules(attrs["password"])
+
+        password = attrs.get("password")
+        password_confirm = attrs.get("password_confirm")
+        if password or password_confirm:
+            if password != password_confirm:
+                raise serializers.ValidationError({"password_confirm": "La confirmacion no coincide."})
+            validate_password_rules(password)
 
         if attrs["role"] == "COCINERO":
             missing = []
@@ -84,7 +89,7 @@ class RecoverPasswordConfirmSerializer(serializers.Serializer):
 class UpdateProfileSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=100, required=False)
     last_name = serializers.CharField(max_length=100, required=False)
-    phone = serializers.CharField(max_length=30, required=False)
+    phone = serializers.CharField(max_length=30, required=False, allow_blank=True)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True)
     notify_gmail = serializers.BooleanField(required=False)
     notify_push = serializers.BooleanField(required=False)

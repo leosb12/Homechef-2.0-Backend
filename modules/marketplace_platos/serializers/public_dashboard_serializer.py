@@ -9,11 +9,12 @@ class PublicDishSerializer(serializers.Serializer):
     chef_name = serializers.CharField()
     is_featured = serializers.BooleanField()
     is_available = serializers.BooleanField(required=False)
-    distance_km = serializers.FloatField(required=False)
+    distance_km = serializers.FloatField(required=False, allow_null=True)
     rating = serializers.FloatField(required=False)
     popularity = serializers.IntegerField(required=False)
     cuisine_type = serializers.CharField(required=False)
     diet_type = serializers.CharField(required=False)
+    tags = serializers.ListField(child=serializers.CharField(), required=False)
 
 
 class PublicDashboardResponseSerializer(serializers.Serializer):

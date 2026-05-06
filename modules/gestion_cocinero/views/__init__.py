@@ -76,7 +76,8 @@ def chef_dishes_item_view(request, dish_id: str):
         service.delete_dish(request.user.id, dish_id)
         return Response({"message": "Plato eliminado."}, status=status.HTTP_200_OK)
     try:
-        if request.data.get("status"):
+        payload_keys = set(request.data.keys())
+        if payload_keys == {"status"}:
             dish = service.update_dish_status(request.user.id, dish_id, request.data.get("status"))
         else:
             dish = service.save_dish(request.user.id, {**request.data, "_id": dish_id})

@@ -1,4 +1,5 @@
 from ..repositories.chef_repository import ChefRepository
+from .availability_rules import normalize_weekly_schedule
 
 
 class ChefServices:
@@ -22,14 +23,12 @@ class ChefServices:
         else:
             raw = str(incoming_specialties).strip()
             payload["specialties"] = [raw] if raw else current_profile.get("specialties", [])
-        self.repo.update_user_identity(
-            chef_id,
-            {
-                "first_name": str(payload.get("first_name", "")).strip(),
-                "last_name": str(payload.get("last_name", "")).strip(),
-                "phone": str(payload.get("phone", "")).strip(),
-            },
-        )
+        identity_updates = {}
+        for key in ("first_name", "last_name", "phone"):
+            if key in payload:
+                identity_updates[key] = str(payload.get(key, "")).strip()
+        if identity_updates:
+            self.repo.update_user_identity(chef_id, identity_updates)
         profile = self.repo.save_profile(chef_id, payload)
         self.repo.log("chef_profile_updated", {"chef_id": chef_id})
         return profile
@@ -61,11 +60,42 @@ class ChefServices:
         return self.repo.get_availability(chef_id)
 
     def save_availability(self, chef_id: str, payload: dict):
-        if not payload.get("accept_delivery") and not payload.get("accept_pickup"):
+        accept_delivery = bool(payload.get("accept_delivery", False))
+        accept_pickup = bool(payload.get("accept_pickup", False))
+        is_active = bool(payload.get("is_active", True))
+        if not accept_delivery and not accept_pickup:
             raise ValueError("Debes habilitar al menos una modalidad: delivery o retiro.")
-        if payload.get("simultaneous_orders_limit", 0) <= 0:
-            raise ValueError("Limite de pedidos simultaneos invalido.")
-        data = self.repo.save_availability(chef_id, payload)
+        try:
+            simultaneous_orders_limit = int(payload.get("simultaneous_orders_limit", 0))
+        except (TypeError, ValueError):
+            simultaneous_orders_limit = 0
+        if simultaneous_orders_limit <= 0:
+            raise ValueError("Límite de pedidos simultáneos inválido.")
+
+        weekly_schedule = normalize_weekly_schedule(payload.get("weekly_schedule", []))
+        if is_active and not weekly_schedule:
+            raise ValueError("Debes configurar al menos un horario de atención activo.")
+        if is_active:
+            for item in weekly_schedule:
+                if "delivery" in item["modes"] and not accept_delivery:
+                    raise ValueError("Hay horarios con delivery, pero la modalidad delivery está desactivada.")
+                if "pickup" in item["modes"] and not accept_pickup:
+                    raise ValueError("Hay horarios con retiro, pero la modalidad retiro está desactivada.")
+
+        if not is_active and self.repo.has_active_orders(chef_id):
+            raise ValueError("No puedes pausar la atención mientras tienes pedidos activos.")
+
+        data = self.repo.save_availability(
+            chef_id,
+            {
+                **payload,
+                "is_active": is_active,
+                "weekly_schedule": weekly_schedule,
+                "accept_delivery": accept_delivery,
+                "accept_pickup": accept_pickup,
+                "simultaneous_orders_limit": simultaneous_orders_limit,
+            },
+        )
         self.repo.log("chef_availability_updated", {"chef_id": chef_id})
         return data
 
@@ -84,11 +114,19 @@ class ChefServices:
         return self.repo.list_dishes(chef_id)
 
     def save_dish(self, chef_id: str, payload: dict):
-        if not payload.get("name"):
+        if not str(payload.get("name", "")).strip():
             raise ValueError("Nombre del plato es obligatorio.")
-        if float(payload.get("price", 0)) <= 0:
+        try:
+            price = float(payload.get("price", 0))
+        except (TypeError, ValueError):
+            price = 0
+        try:
+            portions = int(payload.get("portions", 0))
+        except (TypeError, ValueError):
+            portions = 0
+        if price <= 0:
             raise ValueError("Precio invalido.")
-        if int(payload.get("portions", 0)) <= 0:
+        if portions <= 0:
             raise ValueError("Porciones invalidas.")
         dish = self.repo.save_dish(chef_id, payload)
         self.repo.log("chef_dish_saved", {"chef_id": chef_id, "dish_id": dish["_id"], "status": dish.get("status")})
@@ -98,6 +136,8 @@ class ChefServices:
         if status not in {"published", "paused", "draft", "sold_out"}:
             raise ValueError("Estado de publicacion invalido.")
         dish = self.repo.update_dish_status(chef_id, dish_id, status)
+        if not dish:
+            raise ValueError("Plato no encontrado.")
         self.repo.log("chef_dish_status_updated", {"chef_id": chef_id, "dish_id": dish_id, "status": status})
         return dish
 
@@ -111,12 +151,19 @@ class ChefServices:
 
     def save_daily_menu(self, chef_id: str, payload: dict):
         items = payload.get("items", [])
-        if not items:
+        is_active = bool(payload.get("is_active", False))
+        if is_active and not items:
             raise ValueError("Debes seleccionar al menos un plato.")
         for item in items:
-            if int(item.get("portions", 0)) <= 0:
+            try:
+                portions = int(item.get("portions", 0))
+            except (TypeError, ValueError):
+                portions = 0
+            if portions <= 0:
                 raise ValueError("Cantidad no valida en el menu del dia.")
-        if not payload.get("schedule"):
+            if str(item.get("status", "available")) not in {"available", "paused", "unavailable", "sold_out"}:
+                raise ValueError("Estado invalido en el menu del dia.")
+        if is_active and not payload.get("schedule"):
             raise ValueError("Debes definir horario del menu.")
         menu = self.repo.save_daily_menu(chef_id, payload)
         self.repo.log("chef_daily_menu_updated", {"chef_id": chef_id, "items_count": len(items)})

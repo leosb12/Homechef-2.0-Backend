@@ -16,6 +16,8 @@ class ClientExploreService:
         cuisine_type: str,
         diet_type: str,
         location_available: str,
+        latitude: str = "",
+        longitude: str = "",
     ):
         dishes = self.repository.fetch_client_explore(
             query=query,
@@ -26,10 +28,12 @@ class ClientExploreService:
             availability=availability,
             cuisine_type=cuisine_type,
             diet_type=diet_type,
+            latitude=latitude,
+            longitude=longitude,
         )
         location_message = ""
         if location_available == "false":
-            location_message = " Ubicacion no disponible: mostrando platos generales."
+            location_message = " Ubicación no disponible: mostrando platos generales."
         if not dishes:
             return {
                 "status": "empty",
@@ -38,6 +42,6 @@ class ClientExploreService:
             }
         return {
             "status": "ok",
-            "message": f"Exploracion de platos cargada correctamente.{location_message}".strip(),
+            "message": f"Exploración de platos cargada correctamente.{location_message}".strip(),
             "dishes": dishes,
         }

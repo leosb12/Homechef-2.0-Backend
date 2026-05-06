@@ -35,7 +35,7 @@ def public_dashboard(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsClienteRole])
 def client_explore_dashboard(request):
     try:
         query = request.query_params.get("q", "").strip()
@@ -47,6 +47,11 @@ def client_explore_dashboard(request):
         cuisine_type = request.query_params.get("cuisine_type", "").strip().lower()
         diet_type = request.query_params.get("diet_type", "").strip().lower()
         location_available = request.query_params.get("location_available", "true").strip().lower()
+        latitude = request.query_params.get("latitude", "").strip()
+        longitude = request.query_params.get("longitude", "").strip()
+        if location_available == "false":
+            latitude = ""
+            longitude = ""
         payload = ClientExploreService().get_explore_dashboard(
             query=query,
             featured=featured,
@@ -57,6 +62,8 @@ def client_explore_dashboard(request):
             cuisine_type=cuisine_type,
             diet_type=diet_type,
             location_available=location_available,
+            latitude=latitude,
+            longitude=longitude,
         )
         serializer = PublicDashboardResponseSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
@@ -87,7 +94,10 @@ def dish_detail(request, dish_id: str):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsClienteRole])
 def add_dish_to_cart(request, dish_id: str):
-    quantity = int(request.data.get("quantity", 1))
+    try:
+        quantity = int(request.data.get("quantity", 1))
+    except (TypeError, ValueError):
+        quantity = 0
     result = DishDetailService().add_to_cart(request.user.id, dish_id, quantity)
     if result.get("ok"):
         return Response(result, status=status.HTTP_200_OK)
@@ -123,8 +133,11 @@ def favorites_view(request):
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated, IsClienteRole])
 def remove_favorite(request, favorite_type: str, ref_id: str):
-    FavoritesPreferencesService().remove_favorite(request.user.id, favorite_type, ref_id)
-    return Response({"message": "Favorito removido."}, status=status.HTTP_200_OK)
+    try:
+        FavoritesPreferencesService().remove_favorite(request.user.id, favorite_type, ref_id)
+        return Response({"message": "Favorito removido."}, status=status.HTTP_200_OK)
+    except ValueError as ex:
+        return Response({"detail": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["GET", "PUT"])
@@ -147,4 +160,40 @@ def chef_reputation(request, chef_id: str):
         data = ReputationService().get_reputation(chef_id)
         return Response(data, status=status.HTTP_200_OK)
     except Exception:
-        return Response({"detail": "Error temporal al consultar reputacion."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"detail": "Error temporal al consultar reputación."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def chef_public_profile(request, chef_id: str):
+    try:
+        data = ReputationService().get_public_profile(chef_id)
+        if not data:
+            return Response({"detail": "Cocinero no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(data, status=status.HTTP_200_OK)
+    except Exception:
+        return Response({"detail": "Error temporal al consultar perfil del cocinero."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def create_chef_review(request, chef_id: str):
+    try:
+        review = ReputationService().create_review(request.user.id, chef_id, request.data)
+        return Response(review, status=status.HTTP_201_CREATED)
+    except ValueError as ex:
+        return Response({"detail": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response({"detail": "Error temporal al registrar reseña."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def create_dish_review(request, dish_id: str):
+    try:
+        review = ReputationService().create_dish_review(request.user.id, dish_id, request.data)
+        return Response(review, status=status.HTTP_201_CREATED)
+    except ValueError as ex:
+        return Response({"detail": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response({"detail": "Error temporal al registrar reseña."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)

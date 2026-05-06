@@ -1,7 +1,21 @@
 from ..repositories.marketplace_repository import MarketplaceRepository
 
 ALLOWED_TYPES = {"dish", "chef"}
-ALLOWED_CUISINES = {"tradicional", "fusion", "internacional", "veg"}
+ALLOWED_CUISINES = {
+    "tradicional",
+    "fusion",
+    "internacional",
+    "veg",
+    "italiana",
+    "mexicana",
+    "asiatica",
+    "mediterranea",
+    "japonesa",
+    "vegetariana",
+    "arabe",
+    "tailandesa",
+    "otra",
+}
 ALLOWED_DIETS = {"regular", "vegetariano", "vegano", "sin_gluten"}
 
 
@@ -15,10 +29,17 @@ class FavoritesPreferencesService:
     def add_favorite(self, user_id: str, favorite_type: str, ref_id: str):
         if favorite_type not in ALLOWED_TYPES:
             raise ValueError("Tipo de favorito invalido.")
+        ref_id = str(ref_id or "").strip()
+        if not ref_id:
+            raise ValueError("Debes seleccionar un elemento para favoritos.")
+        if not self.repo.favorite_target_exists(favorite_type, ref_id):
+            raise ValueError("El elemento seleccionado no esta disponible para favoritos.")
         result = self.repo.add_favorite(user_id, favorite_type, ref_id)
         return result
 
     def remove_favorite(self, user_id: str, favorite_type: str, ref_id: str):
+        if favorite_type not in ALLOWED_TYPES:
+            raise ValueError("Tipo de favorito invalido.")
         self.repo.remove_favorite(user_id, favorite_type, ref_id)
 
     def get_preferences(self, user_id: str):

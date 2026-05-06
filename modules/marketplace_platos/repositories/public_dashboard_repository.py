@@ -1,14 +1,14 @@
-from shared.database.mongo_client import get_collection
+from math import asin, cos, radians, sin, sqrt
+
+from django.db.models import Q
+
+from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, Dish
+from modules.gestion_cocinero.services.availability_rules import is_open_now
+from modules.marketplace_platos.models import MarketplaceReview
 
 
 class PublicDashboardRepository:
-    """Repositorio MongoDB para CU-07/CU-08 conectado al menu activo del cocinero."""
-
-    def __init__(self):
-        self.dishes = get_collection("chef_dishes")
-        self.daily_menu = get_collection("chef_daily_menu")
-        self.chef_profiles = get_collection("chef_profiles")
-        self.users = get_collection("auth_users")
+    """PostgreSQL repository for CU-07/CU-08 based on active chef menus."""
 
     def fetch_public_dishes(self):
         docs = self._build_marketplace_docs()
@@ -25,13 +25,24 @@ class PublicDashboardRepository:
         availability: str = "",
         cuisine_type: str = "",
         diet_type: str = "",
+        latitude: str = "",
+        longitude: str = "",
     ):
-        docs = self._build_marketplace_docs()
+        docs = self._build_marketplace_docs(latitude=latitude, longitude=longitude)
         q = str(query or "").strip().lower()
+        min_value = _float_or_none(min_price)
+        max_value = _float_or_none(max_price)
 
         filtered = []
         for doc in docs:
-            if q and q not in doc["name"].lower():
+            searchable = " ".join(
+                [
+                    str(doc.get("name", "")),
+                    str(doc.get("chef_name", "")),
+                    " ".join(doc.get("tags", [])),
+                ]
+            ).lower()
+            if q and q not in searchable:
                 continue
             if featured == "true" and not doc["is_featured"]:
                 continue
@@ -45,9 +56,9 @@ class PublicDashboardRepository:
                 continue
             if diet_type and doc["diet_type"] != diet_type:
                 continue
-            if min_price and doc["approx_price"] < float(min_price):
+            if min_value is not None and doc["approx_price"] < min_value:
                 continue
-            if max_price and doc["approx_price"] > float(max_price):
+            if max_value is not None and doc["approx_price"] > max_value:
                 continue
             filtered.append(doc)
 
@@ -64,62 +75,188 @@ class PublicDashboardRepository:
 
         return filtered
 
-    def _build_marketplace_docs(self):
-        active_menus = list(self.daily_menu.find({"is_active": True}))
-        if not active_menus:
-            return []
-
-        chef_ids = {str(menu.get("chef_id", "")) for menu in active_menus if menu.get("chef_id")}
-        profiles = {
-            str(profile.get("user_id") or profile.get("chef_id")): profile
-            for profile in self.chef_profiles.find({"user_id": {"$in": list(chef_ids)}})
-        }
-        users = {str(u.get("_id")): u for u in self.users.find({"_id": {"$in": list(chef_ids)}})}
-
+    def _build_marketplace_docs(self, latitude: str = "", longitude: str = ""):
+        client_lat = _float_or_none(latitude)
+        client_lng = _float_or_none(longitude)
+        active_menus = (
+            DailyMenu.objects.filter(is_active=True)
+            .select_related("chef", "chef__chef_profile", "chef__availability")
+            .prefetch_related("items__dish")
+        )
         result = []
+        included_dish_ids = set()
+
         for menu in active_menus:
-            chef_id = str(menu.get("chef_id", ""))
-            items = menu.get("items", [])
-            item_ids = [str(item.get("dish_id", "")) for item in items if item.get("dish_id")]
-            if not item_ids:
-                continue
-
-            dishes = {
-                str(dish.get("_id")): dish
-                for dish in self.dishes.find({"_id": {"$in": item_ids}, "status": {"$in": ["published", "draft"]}})
-            }
-            profile = profiles.get(chef_id, {})
-            user = users.get(chef_id, {})
-            chef_name = (
-                profile.get("business_name")
-                or f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
-                or "Cocinero HomeChef"
-            )
-
-            for item in items:
-                dish_id = str(item.get("dish_id", ""))
-                dish = dishes.get(dish_id)
-                if not dish:
+            for item in menu.items.select_related("dish").all():
+                dish = item.dish
+                if dish.status != "published":
                     continue
 
-                menu_status = str(item.get("status", "available"))
-                is_available = menu_status == "available" and int(item.get("portions", 0)) > 0
-
+                menu_status = str(item.status or "available")
+                portions = int(item.portions or 0)
                 result.append(
-                    {
-                        "id": dish_id,
-                        "name": dish.get("name", ""),
-                        "image_url": dish.get("image_url", ""),
-                        "approx_price": float(dish.get("price", 0)),
-                        "chef_name": chef_name,
-                        "is_featured": dish.get("status") == "published",
-                        "is_available": is_available,
-                        "distance_km": 0.0,
-                        "rating": 0.0,
-                        "popularity": 0,
-                        "cuisine_type": "tradicional",
-                        "diet_type": "regular",
-                    }
+                    self._dish_doc(
+                        dish,
+                        menu=menu,
+                        portions=portions,
+                        menu_status=menu_status,
+                        client_lat=client_lat,
+                        client_lng=client_lng,
+                    )
                 )
+                included_dish_ids.add(dish.id)
+
+        published_dishes = (
+            Dish.objects.filter(status="published")
+            .exclude(id__in=included_dish_ids)
+            .select_related("chef", "chef__chef_profile", "chef__availability")
+        )
+        for dish in published_dishes:
+            result.append(
+                self._dish_doc(
+                    dish,
+                    portions=int(dish.portions or 0),
+                    menu_status="available",
+                    client_lat=client_lat,
+                    client_lng=client_lng,
+                )
+            )
 
         return result
+
+    def _dish_doc(
+        self,
+        dish: Dish,
+        menu: DailyMenu | None = None,
+        portions: int = 0,
+        menu_status: str = "available",
+        client_lat: float | None = None,
+        client_lng: float | None = None,
+    ):
+        chef_available = _chef_is_available(dish.chef)
+        tags = _normalize_list(dish.tags)
+        profile = _optional_related(dish.chef, "chef_profile")
+        rating = _rating_for_chef(dish.chef)
+        is_available = menu_status in {"available", "published"} and portions > 0 and chef_available
+        distance_km = _distance_km(
+            client_lat,
+            client_lng,
+            getattr(profile, "location_latitude", None),
+            getattr(profile, "location_longitude", None),
+        )
+
+        return {
+            "id": dish.id,
+            "name": dish.name,
+            "image_url": dish.image_url,
+            "approx_price": float(dish.price),
+            "chef_name": _chef_name(dish.chef, profile),
+            "is_featured": "DESTACADO" in tags or bool(menu and menu.is_active),
+            "is_available": is_available,
+            "distance_km": distance_km,
+            "rating": rating,
+            "popularity": 0,
+            "cuisine_type": _infer_cuisine(tags, profile),
+            "diet_type": _infer_diet(tags),
+            "tags": tags,
+        }
+
+
+def _optional_related(instance, related_name: str):
+    try:
+        return getattr(instance, related_name)
+    except (AttributeError, ChefAvailability.DoesNotExist, ChefProfile.DoesNotExist):
+        return None
+
+
+def _chef_name(chef, profile):
+    return (
+        getattr(profile, "business_name", "")
+        or f"{chef.first_name} {chef.last_name}".strip()
+        or "Cocinero HomeChef"
+    )
+
+
+def _chef_is_available(chef):
+    availability = _optional_related(chef, "availability")
+    if availability is None:
+        return False
+    return is_open_now(
+        {
+            "is_active": availability.is_active,
+            "weekly_schedule": availability.weekly_schedule,
+        }
+    )
+
+
+def _normalize_list(value):
+    if isinstance(value, list):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    if not value:
+        return []
+    return [item.strip().upper() for item in str(value).split(",") if item.strip()]
+
+
+def _infer_cuisine(tags, profile):
+    joined = " ".join(tags + _normalize_list(getattr(profile, "specialties", [])))
+    if "FUSION" in joined:
+        return "fusion"
+    if "INTERNACIONAL" in joined or "ITALIANA" in joined:
+        return "internacional"
+    if "VEG" in joined:
+        return "veg"
+    return "tradicional"
+
+
+def _infer_diet(tags):
+    if "VEGANO" in tags:
+        return "vegano"
+    if "VEGETARIANO" in tags:
+        return "vegetariano"
+    if "SIN_GLUTEN" in tags:
+        return "sin_gluten"
+    return "regular"
+
+
+def _rating_for_chef(chef):
+    chef_ids = [str(chef.supabase_user_id)]
+    if chef.legacy_mongo_id:
+        chef_ids.append(str(chef.legacy_mongo_id))
+    reviews = MarketplaceReview.objects.filter(
+        Q(chef=chef) | Q(chef_ref_id__in=chef_ids),
+        dish__isnull=True,
+        dish_ref_id="",
+        is_public=True,
+    )
+    if not reviews.exists():
+        return 0.0
+    total = sum(review.rating for review in reviews)
+    return round(total / reviews.count(), 2)
+
+
+def _distance_km(origin_lat, origin_lng, destination_lat, destination_lng):
+    if None in (origin_lat, origin_lng, destination_lat, destination_lng):
+        return None
+
+    origin_lat = float(origin_lat)
+    origin_lng = float(origin_lng)
+    destination_lat = float(destination_lat)
+    destination_lng = float(destination_lng)
+    earth_radius_km = 6371.0
+    delta_lat = radians(destination_lat - origin_lat)
+    delta_lng = radians(destination_lng - origin_lng)
+    a = (
+        sin(delta_lat / 2) ** 2
+        + cos(radians(origin_lat)) * cos(radians(destination_lat)) * sin(delta_lng / 2) ** 2
+    )
+    c = 2 * asin(sqrt(a))
+    return round(earth_radius_km * c, 1)
+
+
+def _float_or_none(value):
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
