@@ -9,6 +9,20 @@ from ..serializers.auth_serializers import (
 )
 from ..services.auth_service import AuthService
 from ..services.profile_service import ProfileService
+from .ai_subscription_views import (
+    audit_log,
+    available_plans,
+    can_use_ai,
+    cancel,
+    change_plan,
+    coingate_callback,
+    payment_history,
+    renew,
+    subscribe,
+    stripe_webhook,
+    subscription_status,
+    subscription_summary,
+)
 
 
 @api_view(["GET"])

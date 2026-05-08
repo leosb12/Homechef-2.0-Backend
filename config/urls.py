@@ -10,6 +10,7 @@ def health(request):
 
 urlpatterns = [
     path('api/v1/health/', health),
+    path('api/ia/', include('modules.gestion_usuarios_acceso_suscripcion.ai_subscription_urls')),
     path('api/v1/auth/', include('modules.gestion_usuarios_acceso_suscripcion.urls')),
     path('api/v1/marketplace/', include('modules.marketplace_platos.urls')),
     path('api/v1/chef/', include('modules.gestion_cocinero.urls')),
