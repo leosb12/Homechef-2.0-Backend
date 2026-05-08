@@ -1,6 +1,11 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from ..exceptions import PaymentProviderUnavailable
 from ..models import AIPaymentMethod, AISubscriptionPayment
 from ..providers import CoinGateSandboxPaymentProvider, StripeSandboxPaymentProvider
+
+
+BOB_PER_USD = Decimal("6.91")
 
 
 class PaymentService:
@@ -34,7 +39,7 @@ class PaymentService:
             plan=plan,
             payment_method=payment_method,
             provider=provider,
-            amount=plan.price,
+            amount=self._bob_to_usd(plan.price),
             currency="USD",
             status=AISubscriptionPayment.Status.PENDING,
         )
@@ -59,3 +64,6 @@ class PaymentService:
             ]
         )
         return payment
+
+    def _bob_to_usd(self, amount_bob):
+        return (Decimal(amount_bob) / BOB_PER_USD).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

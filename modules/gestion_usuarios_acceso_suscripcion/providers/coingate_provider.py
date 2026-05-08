@@ -22,8 +22,8 @@ class CoinGateSandboxPaymentProvider(PaymentProvider):
         order_id = f"homechef-ai-{payment.id}-{uuid4().hex}"
         body = {
             "order_id": order_id,
-            "price_amount": str(plan.price),
-            "price_currency": "USD",
+            "price_amount": str(payment.amount),
+            "price_currency": payment.currency,
             "receive_currency": settings.COINGATE_RECEIVE_CURRENCY,
             "callback_url": settings.COINGATE_CALLBACK_URL,
             "success_url": with_query_param(settings.COINGATE_SUCCESS_URL, "coingate_order_id", order_id),

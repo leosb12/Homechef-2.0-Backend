@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import stripe
@@ -36,8 +36,8 @@ class StripeSandboxPaymentProvider(PaymentProvider):
                 line_items=[
                     {
                         "price_data": {
-                            "currency": "usd",
-                            "unit_amount": int(Decimal(plan.price) * 100),
+                            "currency": payment.currency.lower(),
+                            "unit_amount": int((Decimal(payment.amount) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
                             "product_data": {
                                 "name": plan.name,
                                 "description": plan.description or f"Suscripcion IA HomeChef - {plan.name}",

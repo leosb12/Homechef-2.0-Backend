@@ -205,8 +205,14 @@ class AISubscriptionService:
     @transaction.atomic
     def subscribe(self, chef_profile, *, plan_id, payment_provider, payment_method_id=None, payload=None, request=None):
         plan = self._get_available_plan(plan_id, chef_profile, request)
-        if self._current_subscription_for_update(chef_profile):
+        current = self._current_subscription_for_update(chef_profile)
+        if self._is_active(current):
             raise PlanUnavailable("Ya existe una suscripcion IA activa; use cambio de plan")
+        if current:
+            current.status = ChefAISubscription.Status.CANCELLED
+            current.cancel_at_period_end = False
+            current.cancelled_at = timezone.now()
+            current.save(update_fields=["status", "cancel_at_period_end", "cancelled_at", "updated_at"])
 
         subscription = ChefAISubscription.objects.create(
             chef_profile=chef_profile,
@@ -456,6 +462,7 @@ class AISubscriptionService:
     def _current_subscription(self, chef_profile):
         subscription = (
             ChefAISubscription.objects.filter(chef_profile=chef_profile)
+            .exclude(status__in=[ChefAISubscription.Status.CANCELLED, ChefAISubscription.Status.EXPIRED])
             .select_related("plan")
             .order_by("-created_at")
             .first()
