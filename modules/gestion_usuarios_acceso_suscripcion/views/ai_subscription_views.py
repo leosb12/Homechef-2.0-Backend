@@ -244,11 +244,19 @@ def confirm_payment_return(request):
             provider=data.get("provider", ""),
             stripe_session_id=data.get("stripe_session_id", ""),
             coingate_order_id=data.get("coingate_order_id", ""),
+            trust_sandbox_return=data.get("trust_sandbox_return", False),
         )
         status_message = "Pago confirmado" if result.get("status") == "APPROVED" else "Estado de pago consultado"
         return success_response(status_message, result)
     except AISubscriptionError as exc:
         return handle_subscription_error(exc)
+    except Exception as exc:
+        return error_response(
+            "No se pudo confirmar el pago automaticamente",
+            "PAYMENT_CONFIRMATION_FAILED",
+            str(exc),
+            status.HTTP_202_ACCEPTED,
+        )
 
 
 @api_view(["GET"])

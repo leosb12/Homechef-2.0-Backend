@@ -128,13 +128,53 @@ class PaymentCallbackService:
             )
         return self.reject_payment(payment_id=payment.id, provider_response=payload, reason=f"CoinGate {status}", error=True)
 
-    def confirm_checkout_return(self, chef_profile, *, provider="", stripe_session_id="", coingate_order_id=""):
+    def confirm_checkout_return(self, chef_profile, *, provider="", stripe_session_id="", coingate_order_id="", trust_sandbox_return=False):
         normalized_provider = str(provider or "").upper()
+        if trust_sandbox_return and self._can_trust_sandbox_return(normalized_provider):
+            trusted = self._approve_sandbox_return(
+                chef_profile,
+                provider=normalized_provider,
+                stripe_session_id=stripe_session_id,
+                coingate_order_id=coingate_order_id,
+            )
+            if trusted.get("handled"):
+                return trusted
         if stripe_session_id or normalized_provider == "STRIPE_SANDBOX":
             return self.confirm_stripe_checkout(chef_profile, session_id=stripe_session_id)
         if coingate_order_id or normalized_provider == "COINGATE_SANDBOX":
             return self.confirm_coingate_order(chef_profile, order_id=coingate_order_id)
         return {"handled": False, "status": "", "provider": normalized_provider}
+
+    def _can_trust_sandbox_return(self, provider):
+        if provider == "STRIPE_SANDBOX":
+            return settings.DEBUG or str(getattr(settings, "STRIPE_MODE", "")).lower() == "sandbox"
+        if provider == "COINGATE_SANDBOX":
+            return settings.DEBUG or str(getattr(settings, "COINGATE_MODE", "")).lower() == "sandbox"
+        return False
+
+    def _approve_sandbox_return(self, chef_profile, *, provider, stripe_session_id="", coingate_order_id=""):
+        payment = self._find_chef_payment(
+            chef_profile,
+            provider=provider,
+            external_reference=stripe_session_id,
+            coingate_order_id=coingate_order_id,
+        )
+        if not payment:
+            return {"handled": False, "status": "", "provider": provider, "sandbox_trusted": True}
+        handled = self.approve_payment(
+            payment_id=payment.id,
+            provider_response={
+                "sandbox_return": True,
+                "stripe_session_id": stripe_session_id,
+                "coingate_order_id": coingate_order_id,
+            },
+        )
+        return {
+            "handled": handled,
+            "status": AISubscriptionPayment.Status.APPROVED,
+            "provider": provider,
+            "sandbox_trusted": True,
+        }
 
     def confirm_stripe_checkout(self, chef_profile, *, session_id=""):
         payment = self._find_chef_payment(

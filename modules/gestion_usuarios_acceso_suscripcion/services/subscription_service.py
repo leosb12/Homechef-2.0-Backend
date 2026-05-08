@@ -436,17 +436,22 @@ class AISubscriptionService:
         return plan
 
     def _confirm_pending_checkout(self, chef_profile):
-        payment = (
-            AISubscriptionPayment.objects.filter(
-                chef_profile=chef_profile,
-                status=AISubscriptionPayment.Status.PENDING,
+        try:
+            payment = (
+                AISubscriptionPayment.objects.filter(
+                    chef_profile=chef_profile,
+                    status=AISubscriptionPayment.Status.PENDING,
+                )
+                .order_by("-created_at")
+                .first()
             )
-            .order_by("-created_at")
-            .first()
-        )
-        if not payment:
+            if not payment:
+                return None
+            return self.payment_callbacks.confirm_checkout_return(chef_profile, provider=payment.provider)
+        except Exception:
+            # La reconciliacion con el proveedor no debe impedir cargar estado,
+            # planes ni acceso IA. El webhook/confirm-return puede reintentar luego.
             return None
-        return self.payment_callbacks.confirm_checkout_return(chef_profile, provider=payment.provider)
 
     def _current_subscription(self, chef_profile):
         subscription = (
