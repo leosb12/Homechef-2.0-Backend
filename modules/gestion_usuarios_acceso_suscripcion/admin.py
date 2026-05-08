@@ -6,6 +6,7 @@ from .models import (
     AISubscriptionPayment,
     AISubscriptionPlan,
     ChefAISubscription,
+    UsoIA,
 )
 
 
@@ -42,3 +43,10 @@ class AISubscriptionAuditLogAdmin(admin.ModelAdmin):
     list_display = ("id", "chef_profile", "subscription", "action", "created_at")
     list_filter = ("action",)
     search_fields = ("description", "chef_profile__user__email")
+
+
+@admin.register(UsoIA)
+class UsoIAAdmin(admin.ModelAdmin):
+    list_display = ("id", "usuario", "funcion", "permitido", "codigo_resultado", "fecha_intento")
+    list_filter = ("permitido", "codigo_resultado", "funcion")
+    search_fields = ("usuario__email", "funcion", "codigo_resultado", "mensaje_resultado")

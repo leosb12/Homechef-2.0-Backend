@@ -24,6 +24,7 @@ from .ai_subscription_views import (
     subscription_status,
     subscription_summary,
 )
+from .ia_access_views import usar_funcion_ia
 
 
 @api_view(["GET"])

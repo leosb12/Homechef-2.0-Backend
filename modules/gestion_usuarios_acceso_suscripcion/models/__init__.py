@@ -141,8 +141,8 @@ class ChefAISubscription(models.Model):
 
 class AIPaymentMethod(models.Model):
     class Provider(models.TextChoices):
-        STRIPE_SANDBOX = "STRIPE_SANDBOX", "Stripe Sandbox"
-        COINGATE_SANDBOX = "COINGATE_SANDBOX", "CoinGate Sandbox"
+        STRIPE_SANDBOX = "STRIPE_SANDBOX", "Stripe"
+        COINGATE_SANDBOX = "COINGATE_SANDBOX", "CoinGate"
 
     class Type(models.TextChoices):
         MOCK = "MOCK", "Mock"
@@ -274,3 +274,24 @@ class AISubscriptionAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} - {self.chef_profile_id}"
+
+
+class UsoIA(models.Model):
+    usuario = models.ForeignKey(UserProfile, on_delete=models.PROTECT, related_name="usos_ia")
+    funcion = models.CharField(max_length=80)
+    fecha_intento = models.DateTimeField(auto_now_add=True)
+    permitido = models.BooleanField(default=False)
+    codigo_resultado = models.CharField(max_length=60)
+    mensaje_resultado = models.CharField(max_length=255)
+
+    class Meta:
+        db_table = "uso_ia"
+        indexes = [
+            models.Index(fields=["usuario"]),
+            models.Index(fields=["funcion"]),
+            models.Index(fields=["fecha_intento"]),
+            models.Index(fields=["permitido", "codigo_resultado"]),
+        ]
+
+    def __str__(self):
+        return f"{self.usuario_id} - {self.funcion} - {self.codigo_resultado}"

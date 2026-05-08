@@ -15,7 +15,7 @@ class StripeSandboxPaymentProvider(PaymentProvider):
             return PaymentResult(
                 status="ERROR",
                 provider=self.provider,
-                rejection_reason="Stripe Sandbox no esta configurado",
+                rejection_reason="Stripe no esta configurado",
                 provider_response={"configured": False},
             )
 

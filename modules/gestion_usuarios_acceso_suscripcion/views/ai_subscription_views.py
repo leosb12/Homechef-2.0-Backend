@@ -244,7 +244,7 @@ def confirm_payment_return(request):
             provider=data.get("provider", ""),
             stripe_session_id=data.get("stripe_session_id", ""),
             coingate_order_id=data.get("coingate_order_id", ""),
-            trust_sandbox_return=data.get("trust_sandbox_return", False),
+            trust_sandbox_return=data.get("trust_provider_return", False) or data.get("trust_sandbox_return", False),
         )
         status_message = "Pago confirmado" if result.get("status") == "APPROVED" else "Estado de pago consultado"
         return success_response(status_message, result)

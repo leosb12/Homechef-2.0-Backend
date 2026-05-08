@@ -14,9 +14,11 @@ from .views import (
     stripe_webhook,
     subscription_status,
     subscription_summary,
+    usar_funcion_ia,
 )
 
 urlpatterns = [
+    path("usar-funcion", usar_funcion_ia),
     path("plans/", available_plans),
     path("subscription/status/", subscription_status),
     path("subscription/summary/", subscription_summary),

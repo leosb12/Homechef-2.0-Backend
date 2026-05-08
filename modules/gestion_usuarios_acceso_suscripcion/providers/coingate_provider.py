@@ -15,7 +15,7 @@ class CoinGateSandboxPaymentProvider(PaymentProvider):
             return PaymentResult(
                 status="ERROR",
                 provider=self.provider,
-                rejection_reason="CoinGate Sandbox no esta configurado",
+                rejection_reason="CoinGate no esta configurado",
                 provider_response={"configured": False},
             )
 

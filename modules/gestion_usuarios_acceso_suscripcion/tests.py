@@ -1,8 +1,10 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from modules.gestion_cocinero.models import ChefProfile
@@ -11,6 +13,7 @@ from modules.gestion_usuarios_acceso_suscripcion.models import (
     AISubscriptionPlan,
     ChefAISubscription,
     UserProfile,
+    UsoIA,
 )
 
 
@@ -311,3 +314,129 @@ class AISubscriptionSandboxPaymentTests(TestCase):
         self.assertEqual(response.status_code, 402)
         self.assertFalse(response.data["success"])
         self.assertEqual(response.data["error"]["code"], "AI_SUBSCRIPTION_REQUIRED")
+
+
+class IAAccessServiceTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user_profile = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="chef-ai@example.com",
+            role=UserProfile.ROLE_CHEF,
+            is_active=True,
+        )
+        self.chef_profile = ChefProfile.objects.create(
+            user=self.user_profile,
+            business_name="Chef IA",
+            status=ChefProfile.STATUS_APPROVED,
+        )
+        self.user = SimpleNamespace(
+            id=str(self.user_profile.supabase_user_id),
+            role=UserProfile.ROLE_CHEF,
+            is_active=True,
+            is_authenticated=True,
+            profile=self.user_profile,
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _plan(self, **overrides):
+        defaults = {
+            "name": "Plan IA",
+            "description": "Plan con funciones IA",
+            "price": "49.90",
+            "currency": "BOB",
+            "duration_days": 30,
+            "status": AISubscriptionPlan.Status.AVAILABLE,
+            "ai_query_limit": 10,
+            "ai_generation_limit": 5,
+            "vision_enabled": True,
+            "production_recommendations_enabled": True,
+            "pricing_support_enabled": True,
+            "publishing_support_enabled": True,
+            "benefits": ["IA"],
+        }
+        defaults.update(overrides)
+        return AISubscriptionPlan.objects.create(**defaults)
+
+    def _subscription(self, plan, **overrides):
+        now = timezone.now()
+        defaults = {
+            "chef_profile": self.chef_profile,
+            "plan": plan,
+            "status": ChefAISubscription.Status.ACTIVE,
+            "start_date": now,
+            "end_date": now + timedelta(days=30),
+        }
+        defaults.update(overrides)
+        return ChefAISubscription.objects.create(**defaults)
+
+    def _post(self, funcion="asistente_ia"):
+        return self.client.post("/api/ia/usar-funcion", {"funcion": funcion}, format="json")
+
+    def test_usar_funcion_sin_suscripcion(self):
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["codigo"], "SUSCRIPCION_INEXISTENTE")
+        self.assertFalse(response.data["permitido"])
+        self.assertEqual(UsoIA.objects.count(), 1)
+
+    def test_usar_funcion_con_suscripcion_vencida(self):
+        plan = self._plan()
+        now = timezone.now()
+        self._subscription(
+            plan,
+            status=ChefAISubscription.Status.EXPIRED,
+            start_date=now - timedelta(days=60),
+            end_date=now - timedelta(days=30),
+        )
+
+        response = self._post()
+
+        self.assertEqual(response.data["codigo"], "SUSCRIPCION_INACTIVA")
+        self.assertEqual(UsoIA.objects.get().codigo_resultado, "SUSCRIPCION_INACTIVA")
+
+    def test_usar_funcion_con_plan_sin_ia(self):
+        plan = self._plan(ai_query_limit=0, vision_enabled=False)
+        self._subscription(plan)
+
+        response = self._post("vision_artificial")
+
+        self.assertEqual(response.data["codigo"], "PLAN_SIN_IA")
+
+    def test_usar_funcion_con_limite_superado(self):
+        plan = self._plan(ai_query_limit=1)
+        subscription = self._subscription(plan)
+        UsoIA.objects.create(
+            usuario=self.user_profile,
+            funcion="asistente_ia",
+            permitido=True,
+            codigo_resultado="ACCESO_AUTORIZADO",
+            mensaje_resultado="Acceso autorizado",
+        )
+        UsoIA.objects.filter(id=UsoIA.objects.first().id).update(fecha_intento=subscription.start_date)
+
+        response = self._post()
+
+        self.assertEqual(response.data["codigo"], "LIMITE_IA_SUPERADO")
+
+    def test_usar_funcion_no_existente(self):
+        self._subscription(self._plan())
+
+        response = self._post("funcion_inventada")
+
+        self.assertEqual(response.data["codigo"], "FUNCION_IA_NO_EXISTE")
+
+    def test_usar_funcion_no_implementada_registra_intento_sin_consumir_limite(self):
+        self._subscription(self._plan())
+
+        response = self._post()
+
+        self.assertEqual(response.data["codigo"], "IA_NO_IMPLEMENTADA")
+        self.assertEqual(
+            response.data["mensaje"],
+            "La función IA aún no está disponible. Estará habilitada próximamente.",
+        )
+        uso = UsoIA.objects.get()
+        self.assertFalse(uso.permitido)
+        self.assertEqual(uso.codigo_resultado, "IA_NO_IMPLEMENTADA")

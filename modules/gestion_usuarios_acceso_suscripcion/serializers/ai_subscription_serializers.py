@@ -84,6 +84,7 @@ class PaymentReturnConfirmSerializer(serializers.Serializer):
     provider = serializers.ChoiceField(choices=SANDBOX_PAYMENT_PROVIDERS, required=False)
     stripe_session_id = serializers.CharField(required=False, allow_blank=True, max_length=255)
     coingate_order_id = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    trust_provider_return = serializers.BooleanField(default=False)
     trust_sandbox_return = serializers.BooleanField(default=False)
 
 
