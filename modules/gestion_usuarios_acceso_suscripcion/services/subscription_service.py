@@ -298,6 +298,12 @@ class AISubscriptionService:
         if not cancel_at_period_end:
             subscription.status = ChefAISubscription.Status.CANCELLED
             subscription.cancelled_at = now
+            self._cancel_pending_subscriptions(
+                chef_profile,
+                reason=reason or "Cancelacion inmediata de suscripcion IA",
+                request=request,
+                exclude_subscription_id=subscription.id,
+            )
             self._sync_chef_cache(chef_profile, False)
         subscription.save()
         self.audit.log(
@@ -317,6 +323,17 @@ class AISubscriptionService:
                 request=request,
             )
         return subscription
+
+    def _cancel_pending_subscriptions(self, chef_profile, *, reason="", request=None, exclude_subscription_id=None):
+        pending_subscriptions = ChefAISubscription.objects.select_for_update().filter(
+            chef_profile=chef_profile,
+            status=ChefAISubscription.Status.PENDING_PAYMENT,
+        )
+        if exclude_subscription_id:
+            pending_subscriptions = pending_subscriptions.exclude(id=exclude_subscription_id)
+
+        for pending_subscription in pending_subscriptions:
+            self._cancel_pending_subscription(pending_subscription, reason=reason, request=request)
 
     def _cancel_pending_subscription(self, subscription, *, reason="", request=None):
         now = timezone.now()
