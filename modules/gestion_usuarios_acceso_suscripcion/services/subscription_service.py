@@ -9,6 +9,7 @@ from modules.gestion_cocinero.models import ChefProfile
 from ..exceptions import ChefAccessDenied, PlanUnavailable, SubscriptionNotFound
 from ..models import AISubscriptionAuditLog, AISubscriptionPayment, AISubscriptionPlan, ChefAISubscription
 from .audit_service import AISubscriptionAuditService
+from .payment_callback_service import PaymentCallbackService
 from .payment_service import PaymentService
 
 
@@ -110,6 +111,7 @@ class AISubscriptionService:
     def __init__(self):
         self.audit = AISubscriptionAuditService()
         self.payments = PaymentService()
+        self.payment_callbacks = PaymentCallbackService()
 
     def get_chef_profile(self, user):
         profile = getattr(user, "profile", None)
@@ -159,6 +161,7 @@ class AISubscriptionService:
             )
 
     def get_status(self, chef_profile, request=None):
+        self._confirm_pending_checkout(chef_profile)
         subscription = self._current_subscription(chef_profile)
         active = self._is_active(subscription)
         self._sync_chef_cache(chef_profile, active)
@@ -349,6 +352,7 @@ class AISubscriptionService:
         return AISubscriptionAuditLog.objects.filter(chef_profile=chef_profile).order_by("-created_at")
 
     def can_use_ai(self, chef_profile, request=None):
+        self._confirm_pending_checkout(chef_profile)
         subscription = self._current_subscription(chef_profile)
         allowed = self._is_active(subscription)
         self._sync_chef_cache(chef_profile, allowed)
@@ -430,6 +434,19 @@ class AISubscriptionService:
                 )
             raise PlanUnavailable("Plan IA no disponible")
         return plan
+
+    def _confirm_pending_checkout(self, chef_profile):
+        payment = (
+            AISubscriptionPayment.objects.filter(
+                chef_profile=chef_profile,
+                status=AISubscriptionPayment.Status.PENDING,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if not payment:
+            return None
+        return self.payment_callbacks.confirm_checkout_return(chef_profile, provider=payment.provider)
 
     def _current_subscription(self, chef_profile):
         subscription = (
