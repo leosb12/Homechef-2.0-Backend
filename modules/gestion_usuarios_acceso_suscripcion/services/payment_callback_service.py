@@ -1,5 +1,8 @@
 from datetime import timedelta
 
+import requests
+import stripe
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -21,6 +24,8 @@ class PaymentCallbackService:
         payment = self._lock_payment(payment_id=payment_id, external_reference=external_reference)
         if not payment:
             return False
+        if payment.status == AISubscriptionPayment.Status.APPROVED:
+            return True
         subscription = payment.subscription
         chef_profile = payment.chef_profile
         now = timezone.now()
@@ -123,6 +128,91 @@ class PaymentCallbackService:
             )
         return self.reject_payment(payment_id=payment.id, provider_response=payload, reason=f"CoinGate {status}", error=True)
 
+    def confirm_checkout_return(self, chef_profile, *, provider="", stripe_session_id="", coingate_order_id=""):
+        normalized_provider = str(provider or "").upper()
+        if stripe_session_id or normalized_provider == "STRIPE_SANDBOX":
+            return self.confirm_stripe_checkout(chef_profile, session_id=stripe_session_id)
+        if coingate_order_id or normalized_provider == "COINGATE_SANDBOX":
+            return self.confirm_coingate_order(chef_profile, order_id=coingate_order_id)
+        return {"handled": False, "status": "", "provider": normalized_provider}
+
+    def confirm_stripe_checkout(self, chef_profile, *, session_id=""):
+        payment = self._find_chef_payment(
+            chef_profile,
+            provider="STRIPE_SANDBOX",
+            external_reference=session_id,
+        )
+        if not payment or not payment.external_reference or not settings.STRIPE_SECRET_KEY:
+            return {"handled": False, "status": "", "provider": "STRIPE_SANDBOX"}
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        try:
+            session = stripe.checkout.Session.retrieve(payment.external_reference)
+        except stripe.error.StripeError as exc:
+            payment.provider_response = self._merge_response(payment.provider_response, {"stripe_return_error": str(exc)})
+            payment.save(update_fields=["provider_response"])
+            return {"handled": False, "status": payment.status, "provider": "STRIPE_SANDBOX"}
+
+        payment_status = self._response_value(session, "payment_status")
+        checkout_status = self._response_value(session, "status")
+        response = self._response_dict(session)
+        if payment_status == "paid":
+            handled = self.approve_payment(payment_id=payment.id, provider_response={"stripe_session": response})
+            return {"handled": handled, "status": AISubscriptionPayment.Status.APPROVED, "provider": "STRIPE_SANDBOX"}
+        if checkout_status == "expired":
+            handled = self.reject_payment(payment_id=payment.id, provider_response={"stripe_session": response}, reason="Stripe checkout expirado")
+            return {"handled": handled, "status": AISubscriptionPayment.Status.REJECTED, "provider": "STRIPE_SANDBOX"}
+
+        self._store_pending_response(payment, {"stripe_session": response})
+        return {"handled": True, "status": payment.status, "provider": "STRIPE_SANDBOX"}
+
+    def confirm_coingate_order(self, chef_profile, *, order_id=""):
+        payment = self._find_chef_payment(
+            chef_profile,
+            provider="COINGATE_SANDBOX",
+            coingate_order_id=order_id,
+        )
+        if not payment or not payment.external_reference or not settings.COINGATE_API_BASE_URL or not settings.COINGATE_API_TOKEN:
+            return {"handled": False, "status": "", "provider": "COINGATE_SANDBOX"}
+
+        headers = {
+            "Authorization": f"Bearer {settings.COINGATE_API_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = requests.get(
+                f"{settings.COINGATE_API_BASE_URL.rstrip('/')}/orders/{payment.external_reference}",
+                headers=headers,
+                timeout=15,
+            )
+            response_data = response.json()
+        except requests.RequestException as exc:
+            self._store_pending_response(payment, {"coingate_return_error": str(exc)})
+            return {"handled": False, "status": payment.status, "provider": "COINGATE_SANDBOX"}
+        except ValueError:
+            self._store_pending_response(payment, {"coingate_return_error": "Respuesta invalida de CoinGate"})
+            return {"handled": False, "status": payment.status, "provider": "COINGATE_SANDBOX"}
+
+        if response.status_code >= 400:
+            self._store_pending_response(payment, {"coingate_return_error": response_data})
+            return {"handled": False, "status": payment.status, "provider": "COINGATE_SANDBOX"}
+
+        status = str(response_data.get("status") or "").lower()
+        if status in self.COINGATE_APPROVED:
+            handled = self.approve_payment(payment_id=payment.id, provider_response=response_data)
+            return {"handled": handled, "status": AISubscriptionPayment.Status.APPROVED, "provider": "COINGATE_SANDBOX"}
+        if status in self.COINGATE_REJECTED:
+            handled = self.reject_payment(
+                payment_id=payment.id,
+                provider_response=response_data,
+                reason=f"CoinGate {status}",
+                error=status == "invalid",
+            )
+            return {"handled": handled, "status": AISubscriptionPayment.Status.REJECTED, "provider": "COINGATE_SANDBOX"}
+
+        self.mark_pending(external_reference=payment.external_reference, order_id=order_id, provider_response=response_data)
+        return {"handled": True, "status": AISubscriptionPayment.Status.PENDING, "provider": "COINGATE_SANDBOX"}
+
     def _lock_payment(self, payment_id=None, external_reference=None):
         queryset = AISubscriptionPayment.objects.select_for_update()
         if payment_id:
@@ -144,6 +234,44 @@ class PaymentCallbackService:
     def _lock_coingate_payment(self, *, external_reference=None, order_id=None):
         payment = self._find_coingate_payment(external_reference=external_reference, order_id=order_id)
         return self._lock_payment(payment_id=payment.id) if payment else None
+
+    def _find_chef_payment(self, chef_profile, *, provider, external_reference="", coingate_order_id=""):
+        queryset = AISubscriptionPayment.objects.filter(
+            chef_profile=chef_profile,
+            provider=provider,
+            status=AISubscriptionPayment.Status.PENDING,
+        ).order_by("-created_at")
+        if external_reference:
+            return queryset.filter(external_reference=external_reference).first()
+        if coingate_order_id:
+            return queryset.filter(
+                Q(external_reference=coingate_order_id)
+                | Q(provider_response__homechef_order_id=coingate_order_id)
+                | Q(provider_response__order_id=coingate_order_id)
+            ).first()
+        return queryset.first()
+
+    def _store_pending_response(self, payment, provider_response):
+        payment.provider_response = self._merge_response(payment.provider_response, provider_response)
+        payment.save(update_fields=["provider_response"])
+
+    def _response_value(self, response, key):
+        if isinstance(response, dict):
+            return response.get(key)
+        return getattr(response, key, None)
+
+    def _response_dict(self, response):
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "to_dict_recursive"):
+            return response.to_dict_recursive()
+        if hasattr(response, "to_dict"):
+            return response.to_dict()
+        return {
+            key: value
+            for key, value in getattr(response, "__dict__", {}).items()
+            if not key.startswith("_")
+        }
 
     def _cancel_replaced_subscription(self, payment, now):
         previous_id = payment.provider_response.get("replace_subscription_id")

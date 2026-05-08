@@ -15,6 +15,7 @@ from ..serializers.ai_subscription_serializers import (
     CancelSubscriptionRequestSerializer,
     ChangePlanRequestSerializer,
     ChefAISubscriptionSerializer,
+    PaymentReturnConfirmSerializer,
     RenewRequestSerializer,
     SubscribeRequestSerializer,
     SubscriptionSummaryRequestSerializer,
@@ -226,6 +227,26 @@ def payment_history(request):
         service, chef_profile = _service_and_chef(request)
         payments = service.list_payments(chef_profile)
         return success_response("Historial de pagos IA", AISubscriptionPaymentSerializer(payments, many=True).data)
+    except AISubscriptionError as exc:
+        return handle_subscription_error(exc)
+
+
+@api_view(["POST"])
+@permission_classes([IsActiveChef])
+def confirm_payment_return(request):
+    serializer = PaymentReturnConfirmSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        service, chef_profile = _service_and_chef(request)
+        data = serializer.validated_data
+        result = PaymentCallbackService().confirm_checkout_return(
+            chef_profile,
+            provider=data.get("provider", ""),
+            stripe_session_id=data.get("stripe_session_id", ""),
+            coingate_order_id=data.get("coingate_order_id", ""),
+        )
+        status_message = "Pago confirmado" if result.get("status") == "APPROVED" else "Estado de pago consultado"
+        return success_response(status_message, result)
     except AISubscriptionError as exc:
         return handle_subscription_error(exc)
 

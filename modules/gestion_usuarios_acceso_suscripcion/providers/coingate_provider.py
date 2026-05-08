@@ -1,4 +1,5 @@
 from uuid import uuid4
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
@@ -25,8 +26,8 @@ class CoinGateSandboxPaymentProvider(PaymentProvider):
             "price_currency": "USD",
             "receive_currency": settings.COINGATE_RECEIVE_CURRENCY,
             "callback_url": settings.COINGATE_CALLBACK_URL,
-            "success_url": settings.COINGATE_SUCCESS_URL,
-            "cancel_url": settings.COINGATE_CANCEL_URL,
+            "success_url": with_query_param(settings.COINGATE_SUCCESS_URL, "coingate_order_id", order_id),
+            "cancel_url": with_query_param(settings.COINGATE_CANCEL_URL, "coingate_order_id", order_id),
             "title": f"Suscripcion IA HomeChef - {plan.name}",
             "description": "Pago de suscripcion IA HomeChef",
         }
@@ -84,3 +85,13 @@ class CoinGateSandboxPaymentProvider(PaymentProvider):
             payment_url=payment_url,
             provider_response=response_data,
         )
+
+
+def with_query_param(url, key, value):
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if any(item_key == key for item_key, _ in query):
+        return url
+    separator = "&" if parts.query else ""
+    next_query = f"{parts.query}{separator}{key}={value}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, next_query, parts.fragment))

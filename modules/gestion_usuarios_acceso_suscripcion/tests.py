@@ -90,6 +90,9 @@ class AISubscriptionSandboxPaymentTests(TestCase):
         self.assertFalse(ChefAISubscription.objects.filter(status=ChefAISubscription.Status.ACTIVE).exists())
         self.chef_profile.refresh_from_db()
         self.assertFalse(self.chef_profile.ai_subscription_active)
+        create_kwargs = checkout_create.call_args.kwargs
+        self.assertIn("session_id={CHECKOUT_SESSION_ID}", create_kwargs["success_url"])
+        self.assertIn("session_id={CHECKOUT_SESSION_ID}", create_kwargs["cancel_url"])
 
     @patch("modules.gestion_usuarios_acceso_suscripcion.providers.coingate_provider.requests.post")
     def test_create_coingate_sandbox_payment_pending(self, requests_post):
@@ -116,6 +119,71 @@ class AISubscriptionSandboxPaymentTests(TestCase):
         self.assertEqual(response.data["data"]["provider"], "COINGATE_SANDBOX")
         self.assertIn("sandbox.coingate.com", response.data["data"]["payment_url"])
         self.assertFalse(ChefAISubscription.objects.filter(status=ChefAISubscription.Status.ACTIVE).exists())
+        request_body = requests_post.call_args.kwargs["json"]
+        self.assertIn("coingate_order_id=homechef-ai-", request_body["success_url"])
+        self.assertIn("coingate_order_id=homechef-ai-", request_body["cancel_url"])
+
+    @patch("modules.gestion_usuarios_acceso_suscripcion.services.payment_callback_service.stripe.checkout.Session.retrieve")
+    @patch("modules.gestion_usuarios_acceso_suscripcion.providers.stripe_provider.stripe.checkout.Session.create")
+    def test_confirm_stripe_return_activates_subscription_without_webhook(self, checkout_create, checkout_retrieve):
+        checkout_create.return_value = SimpleNamespace(
+            id="cs_test_return",
+            url="https://checkout.stripe.com/c/pay/cs_test_return",
+            mode="payment",
+            payment_status="unpaid",
+            metadata={},
+        )
+        checkout_retrieve.return_value = SimpleNamespace(
+            id="cs_test_return",
+            status="complete",
+            payment_status="paid",
+            metadata={},
+        )
+        self.client.post(
+            "/api/ia/subscription/subscribe/",
+            {"plan_id": self.plan.id, "payment_provider": "STRIPE_SANDBOX"},
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/ia/subscription/payments/confirm-return/",
+            {"provider": "STRIPE_SANDBOX", "stripe_session_id": "cs_test_return"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["data"]["handled"])
+        payment = AISubscriptionPayment.objects.get(external_reference="cs_test_return")
+        self.assertEqual(payment.status, AISubscriptionPayment.Status.APPROVED)
+        self.assertEqual(payment.subscription.status, ChefAISubscription.Status.ACTIVE)
+        self.chef_profile.refresh_from_db()
+        self.assertTrue(self.chef_profile.ai_subscription_active)
+
+    @patch("modules.gestion_usuarios_acceso_suscripcion.providers.stripe_provider.stripe.checkout.Session.create")
+    def test_cancel_pending_payment_marks_subscription_cancelled(self, checkout_create):
+        checkout_create.return_value = SimpleNamespace(
+            id="cs_test_cancel",
+            url="https://checkout.stripe.com/c/pay/cs_test_cancel",
+            mode="payment",
+            payment_status="unpaid",
+            metadata={},
+        )
+        self.client.post(
+            "/api/ia/subscription/subscribe/",
+            {"plan_id": self.plan.id, "payment_provider": "STRIPE_SANDBOX"},
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/ia/subscription/cancel/",
+            {"cancel_at_period_end": False, "reason": "Pago cancelado por prueba"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payment = AISubscriptionPayment.objects.get(external_reference="cs_test_cancel")
+        self.assertEqual(payment.status, AISubscriptionPayment.Status.REJECTED)
+        self.assertEqual(payment.subscription.status, ChefAISubscription.Status.CANCELLED)
 
     @patch("modules.gestion_usuarios_acceso_suscripcion.providers.stripe_provider.stripe.checkout.Session.create")
     @patch("modules.gestion_usuarios_acceso_suscripcion.views.ai_subscription_views.stripe.Webhook.construct_event")

@@ -16,6 +16,7 @@ from .ai_subscription_views import (
     cancel,
     change_plan,
     coingate_callback,
+    confirm_payment_return,
     payment_history,
     renew,
     subscribe,

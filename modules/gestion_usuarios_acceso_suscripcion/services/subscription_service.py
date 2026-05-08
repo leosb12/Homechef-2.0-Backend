@@ -279,6 +279,9 @@ class AISubscriptionService:
     def cancel(self, chef_profile, *, cancel_at_period_end=True, reason="", request=None):
         subscription = self._current_subscription_for_update(chef_profile)
         if not self._is_active(subscription):
+            pending_subscription = self._pending_subscription_for_update(chef_profile)
+            if pending_subscription:
+                return self._cancel_pending_subscription(pending_subscription, reason=reason, request=request)
             raise SubscriptionNotFound("No existe suscripcion activa para cancelar")
         now = timezone.now()
         subscription.cancel_at_period_end = cancel_at_period_end
@@ -304,6 +307,39 @@ class AISubscriptionService:
                 description="Suscripcion IA cancelada",
                 request=request,
             )
+        return subscription
+
+    def _cancel_pending_subscription(self, subscription, *, reason="", request=None):
+        now = timezone.now()
+        subscription.status = ChefAISubscription.Status.CANCELLED
+        subscription.cancel_at_period_end = False
+        subscription.cancellation_requested_at = now
+        subscription.cancelled_at = now
+        subscription.save(update_fields=[
+            "status",
+            "cancel_at_period_end",
+            "cancellation_requested_at",
+            "cancelled_at",
+            "updated_at",
+        ])
+
+        AISubscriptionPayment.objects.filter(
+            subscription=subscription,
+            status=AISubscriptionPayment.Status.PENDING,
+        ).update(
+            status=AISubscriptionPayment.Status.REJECTED,
+            rejection_reason=(reason or "Pago cancelado por el cocinero")[:255],
+        )
+
+        self._sync_chef_cache(subscription.chef_profile, False)
+        self.audit.log(
+            chef_profile=subscription.chef_profile,
+            subscription=subscription,
+            action=AISubscriptionAuditLog.Action.CANCELLATION_CONFIRMED,
+            description="Pago pendiente de suscripcion IA cancelado",
+            metadata={"reason": reason},
+            request=request,
+        )
         return subscription
 
     def list_payments(self, chef_profile):
@@ -420,6 +456,15 @@ class AISubscriptionService:
         return (
             ChefAISubscription.objects.select_for_update()
             .filter(chef_profile=chef_profile, status__in=statuses)
+            .select_related("plan")
+            .order_by("-created_at")
+            .first()
+        )
+
+    def _pending_subscription_for_update(self, chef_profile):
+        return (
+            ChefAISubscription.objects.select_for_update()
+            .filter(chef_profile=chef_profile, status=ChefAISubscription.Status.PENDING_PAYMENT)
             .select_related("plan")
             .order_by("-created_at")
             .first()

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import stripe
 from django.conf import settings
@@ -30,8 +31,8 @@ class StripeSandboxPaymentProvider(PaymentProvider):
             session = stripe.checkout.Session.create(
                 mode="payment",
                 payment_method_types=["card"],
-                success_url=settings.STRIPE_SUCCESS_URL,
-                cancel_url=settings.STRIPE_CANCEL_URL,
+                success_url=with_query_param(settings.STRIPE_SUCCESS_URL, "session_id", "{CHECKOUT_SESSION_ID}"),
+                cancel_url=with_query_param(settings.STRIPE_CANCEL_URL, "session_id", "{CHECKOUT_SESSION_ID}"),
                 line_items=[
                     {
                         "price_data": {
@@ -69,3 +70,13 @@ class StripeSandboxPaymentProvider(PaymentProvider):
                 "metadata": metadata,
             },
         )
+
+
+def with_query_param(url, key, value):
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if any(item_key == key for item_key, _ in query):
+        return url
+    separator = "&" if parts.query else ""
+    next_query = f"{parts.query}{separator}{key}={value}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, next_query, parts.fragment))

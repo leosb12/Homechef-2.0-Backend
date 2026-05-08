@@ -80,6 +80,12 @@ class CancelSubscriptionRequestSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
 
+class PaymentReturnConfirmSerializer(serializers.Serializer):
+    provider = serializers.ChoiceField(choices=SANDBOX_PAYMENT_PROVIDERS, required=False)
+    stripe_session_id = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    coingate_order_id = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
 class AISubscriptionPaymentSerializer(serializers.ModelSerializer):
     plan = AISubscriptionPlanSerializer()
 
