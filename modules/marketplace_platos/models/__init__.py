@@ -19,11 +19,17 @@ class MarketplaceFavorite(models.Model):
     favorite_type = models.CharField(max_length=20)
     ref_id = models.CharField(max_length=128)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "marketplace_favorites"
         unique_together = ("user", "favorite_type", "ref_id")
-        indexes = [models.Index(fields=["favorite_type", "ref_id"])]
+        indexes = [
+            models.Index(fields=["favorite_type", "ref_id"]),
+            models.Index(fields=["deleted_at"]),
+        ]
 
     def __str__(self):
         return f"{self.user.email} -> {self.favorite_type}:{self.ref_id}"
@@ -37,9 +43,12 @@ class MarketplacePreference(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "marketplace_preferences"
+        indexes = [models.Index(fields=["deleted_at"])]
 
     def __str__(self):
         return f"Preferences for {self.user.email}"
@@ -69,6 +78,9 @@ class MarketplaceReview(models.Model):
     is_public = models.BooleanField(default=True)
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "marketplace_reviews"
@@ -76,6 +88,7 @@ class MarketplaceReview(models.Model):
             models.Index(fields=["chef_ref_id", "is_public"]),
             models.Index(fields=["dish_ref_id", "is_public"]),
             models.Index(fields=["rating"]),
+            models.Index(fields=["deleted_at"]),
         ]
 
     def __str__(self):

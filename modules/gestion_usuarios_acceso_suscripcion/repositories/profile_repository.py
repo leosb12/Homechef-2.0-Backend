@@ -69,7 +69,7 @@ class ProfileRepository:
         user = self._find_user(user_id)
         if not user:
             return None
-        profile = ChefProfile.objects.filter(user=user).first()
+        profile = ChefProfile.objects.filter(user=user, deleted_at__isnull=True).first()
         if not profile:
             return None
         return {

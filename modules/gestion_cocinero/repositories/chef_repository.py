@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from django.db import transaction
+from django.db import models, transaction
+from django.utils import timezone as django_timezone
 
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, DailyMenuItem, Dish
 from modules.gestion_cocinero.services.availability_rules import availability_summary, is_open_now
@@ -14,7 +15,7 @@ class ChefRepository:
 
     def get_profile(self, chef_id: str):
         user = self._find_user(chef_id)
-        profile = ChefProfile.objects.filter(user=user).first() if user else None
+        profile = ChefProfile.objects.filter(user=user, deleted_at__isnull=True).first() if user else None
 
         return {
             "user_id": chef_id,
@@ -62,18 +63,23 @@ class ChefRepository:
             "schedule": str(payload.get("schedule", current.schedule if current else "")).strip(),
             "profile_image_url": str(payload.get("profile_image_url", current.profile_image_url if current else "")).strip(),
             "status": str(payload.get("status") or (current.status if current else "pending_validation")).strip(),
+            "deleted_at": None,
+            "version": (current.version + 1) if current else 1,
         }
         ChefProfile.objects.update_or_create(user=user, defaults=defaults)
         return self.get_profile(chef_id)
 
     def save_location(self, chef_id: str, payload: dict):
         user = self._require_user(chef_id)
+        current = ChefProfile.objects.filter(user=user).first()
         ChefProfile.objects.update_or_create(
             user=user,
             defaults={
                 "location_latitude": payload.get("latitude"),
                 "location_longitude": payload.get("longitude"),
                 "location_address": str(payload.get("address", "")).strip(),
+                "deleted_at": None,
+                "version": (current.version + 1) if current else 1,
             },
         )
         return self.get_profile(chef_id)
@@ -91,7 +97,7 @@ class ChefRepository:
 
     def get_availability(self, chef_id: str):
         user = self._find_user(chef_id)
-        availability = ChefAvailability.objects.filter(chef=user).first() if user else None
+        availability = ChefAvailability.objects.filter(chef=user, deleted_at__isnull=True).first() if user else None
         if not availability:
             data = {
                 "chef_id": chef_id,
@@ -107,6 +113,7 @@ class ChefRepository:
 
     def save_availability(self, chef_id: str, payload: dict):
         user = self._require_user(chef_id)
+        current = ChefAvailability.objects.filter(chef=user).first()
         availability, _ = ChefAvailability.objects.update_or_create(
             chef=user,
             defaults={
@@ -116,6 +123,8 @@ class ChefRepository:
                 "accept_delivery": bool(payload.get("accept_delivery", True)),
                 "accept_pickup": bool(payload.get("accept_pickup", True)),
                 "simultaneous_orders_limit": int(payload.get("simultaneous_orders_limit", 10)),
+                "deleted_at": None,
+                "version": (current.version + 1) if current else 1,
             },
         )
         return self._availability_to_dict(availability)
@@ -125,11 +134,14 @@ class ChefRepository:
 
     def list_dishes(self, chef_id: str):
         user = self._require_user(chef_id)
-        return [self._dish_to_dict(dish) for dish in Dish.objects.filter(chef=user).order_by("-updated_at")]
+        return [
+            self._dish_to_dict(dish)
+            for dish in Dish.objects.filter(chef=user, deleted_at__isnull=True).order_by("-updated_at")
+        ]
 
     def get_dish(self, chef_id: str, dish_id: str):
         user = self._require_user(chef_id)
-        dish = Dish.objects.filter(id=dish_id, chef=user).first()
+        dish = Dish.objects.filter(id=dish_id, chef=user, deleted_at__isnull=True).first()
         return self._dish_to_dict(dish) if dish else None
 
     def save_dish(self, chef_id: str, payload: dict):
@@ -139,6 +151,7 @@ class ChefRepository:
         status = "published" if action == "publish" else payload.get("status", "draft")
         if status not in {"published", "paused", "draft", "sold_out"}:
             raise ValueError("Estado de publicacion invalido.")
+        current = Dish.objects.filter(id=str(dish_id), chef=user).first()
         dish, _ = Dish.objects.update_or_create(
             id=str(dish_id),
             chef=user,
@@ -153,26 +166,36 @@ class ChefRepository:
                 "image_url": str(payload.get("image_url", "")).strip(),
                 "schedule": str(payload.get("schedule", "")).strip(),
                 "status": status,
+                "deleted_at": None,
+                "version": (current.version + 1) if current else 1,
             },
         )
         return self._dish_to_dict(dish)
 
     def update_dish_status(self, chef_id: str, dish_id: str, status: str):
         user = self._require_user(chef_id)
-        dish = Dish.objects.filter(id=dish_id, chef=user).first()
+        dish = Dish.objects.filter(id=dish_id, chef=user, deleted_at__isnull=True).first()
         if not dish:
             return None
         dish.status = status
-        dish.save(update_fields=["status", "updated_at"])
+        dish.version += 1
+        dish.save(update_fields=["status", "version", "updated_at"])
         return self._dish_to_dict(dish)
 
     def delete_dish(self, chef_id: str, dish_id: str):
         user = self._require_user(chef_id)
-        Dish.objects.filter(id=dish_id, chef=user).delete()
+        Dish.objects.filter(id=dish_id, chef=user, deleted_at__isnull=True).update(
+            deleted_at=django_timezone.now(),
+            version=models.F("version") + 1,
+        )
 
     def get_daily_menu(self, chef_id: str):
         user = self._find_user(chef_id)
-        menu = DailyMenu.objects.filter(chef=user).prefetch_related("items__dish").first() if user else None
+        menu = (
+            DailyMenu.objects.filter(chef=user, deleted_at__isnull=True).prefetch_related("items__dish").first()
+            if user
+            else None
+        )
         if not menu:
             return {"chef_id": chef_id, "items": [], "is_active": False, "schedule": ""}
         return self._menu_to_dict(menu)
@@ -180,11 +203,14 @@ class ChefRepository:
     @transaction.atomic
     def save_daily_menu(self, chef_id: str, payload: dict):
         user = self._require_user(chef_id)
+        current = DailyMenu.objects.filter(chef=user).first()
         menu, _ = DailyMenu.objects.update_or_create(
             chef=user,
             defaults={
                 "schedule": str(payload.get("schedule", "")).strip(),
                 "is_active": bool(payload.get("is_active", False)),
+                "deleted_at": None,
+                "version": (current.version + 1) if current else 1,
             },
         )
         menu.items.all().delete()
@@ -204,7 +230,7 @@ class ChefRepository:
 
     def dashboard_metrics(self, chef_id: str):
         user = self._require_user(chef_id)
-        dishes = list(Dish.objects.filter(chef=user))
+        dishes = list(Dish.objects.filter(chef=user, deleted_at__isnull=True))
         published = [dish for dish in dishes if dish.status == "published"]
         availability = self.get_availability(chef_id)
         return {
@@ -264,6 +290,8 @@ class ChefRepository:
             "image_url": dish.image_url,
             "schedule": dish.schedule,
             "status": dish.status,
+            "deleted_at": dish.deleted_at,
+            "version": dish.version,
             "updated_at": dish.updated_at,
         }
 
@@ -283,4 +311,6 @@ class ChefRepository:
                 for item in menu.items.select_related("dish").all()
             ],
             "updated_at": menu.updated_at,
+            "deleted_at": menu.deleted_at,
+            "version": menu.version,
         }

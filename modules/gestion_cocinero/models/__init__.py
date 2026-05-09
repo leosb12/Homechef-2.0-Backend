@@ -28,10 +28,15 @@ class ChefProfile(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "chef_profiles"
-        indexes = [models.Index(fields=["status"])]
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["deleted_at"]),
+        ]
 
     def __str__(self):
         return self.business_name or self.user.email
@@ -48,9 +53,12 @@ class ChefAvailability(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "chef_availability"
+        indexes = [models.Index(fields=["deleted_at"])]
 
     def __str__(self):
         return f"Availability for {self.chef.email}"
@@ -77,12 +85,15 @@ class Dish(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "chef_dishes"
         indexes = [
             models.Index(fields=["chef", "status"]),
             models.Index(fields=["updated_at"]),
+            models.Index(fields=["deleted_at"]),
         ]
 
     def __str__(self):
@@ -96,9 +107,12 @@ class DailyMenu(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "chef_daily_menu"
+        indexes = [models.Index(fields=["deleted_at"])]
 
     def __str__(self):
         return f"Daily menu for {self.chef.email}"

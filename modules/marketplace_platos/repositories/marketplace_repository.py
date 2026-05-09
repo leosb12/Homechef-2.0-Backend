@@ -2,6 +2,7 @@ from uuid import UUID, uuid4
 
 from django.db import IntegrityError
 from django.db.models import Q
+from django.utils import timezone
 
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, Dish
 from modules.gestion_cocinero.services.availability_rules import availability_summary, is_open_now
@@ -14,7 +15,11 @@ class MarketplaceRepository:
         pass
 
     def get_dish_detail(self, dish_id: str):
-        dish = Dish.objects.filter(id=dish_id).select_related("chef", "chef__chef_profile", "chef__availability").first()
+        dish = (
+            Dish.objects.filter(id=dish_id, deleted_at__isnull=True)
+            .select_related("chef", "chef__chef_profile", "chef__availability")
+            .first()
+        )
         if not dish or dish.status != "published":
             return None
 
@@ -98,29 +103,43 @@ class MarketplaceRepository:
                 "target": self._favorite_target(favorite.favorite_type, favorite.ref_id),
                 "created_at": favorite.created_at,
             }
-            for favorite in MarketplaceFavorite.objects.filter(user=user).order_by("-created_at")
+            for favorite in MarketplaceFavorite.objects.filter(user=user, deleted_at__isnull=True).order_by("-created_at")
         ]
 
     def add_favorite(self, user_id: str, favorite_type: str, ref_id: str):
         user = self._require_user(user_id)
         try:
-            _, created = MarketplaceFavorite.objects.get_or_create(
+            favorite, created = MarketplaceFavorite.objects.get_or_create(
                 user=user,
                 favorite_type=favorite_type,
                 ref_id=ref_id,
                 defaults={"id": str(uuid4())},
             )
+            if not created and favorite.deleted_at:
+                favorite.deleted_at = None
+                favorite.version += 1
+                favorite.save(update_fields=["deleted_at", "version", "updated_at"])
+                created = True
         except IntegrityError:
             created = False
         return {"duplicated": not created}
 
     def remove_favorite(self, user_id: str, favorite_type: str, ref_id: str):
         user = self._require_user(user_id)
-        MarketplaceFavorite.objects.filter(user=user, favorite_type=favorite_type, ref_id=ref_id).delete()
+        favorite = MarketplaceFavorite.objects.filter(
+            user=user,
+            favorite_type=favorite_type,
+            ref_id=ref_id,
+            deleted_at__isnull=True,
+        ).first()
+        if favorite:
+            favorite.deleted_at = timezone.now()
+            favorite.version += 1
+            favorite.save(update_fields=["deleted_at", "version", "updated_at"])
 
     def get_preferences(self, user_id: str):
         user = self._require_user(user_id)
-        preferences = MarketplacePreference.objects.filter(user=user).first()
+        preferences = MarketplacePreference.objects.filter(user=user, deleted_at__isnull=True).first()
         if not preferences:
             return {"user_id": user_id, "cuisine_types": [], "diet_types": [], "price_range": {}}
         return {
@@ -132,12 +151,15 @@ class MarketplaceRepository:
 
     def save_preferences(self, user_id: str, payload: dict):
         user = self._require_user(user_id)
+        current = MarketplacePreference.objects.filter(user=user).first()
         preferences, _ = MarketplacePreference.objects.update_or_create(
             user=user,
             defaults={
                 "cuisine_types": payload.get("cuisine_types", []),
                 "diet_types": payload.get("diet_types", []),
                 "price_range": payload.get("price_range", {}),
+                "deleted_at": None,
+                "version": (current.version + 1) if current else 1,
             },
         )
         return {
@@ -155,7 +177,9 @@ class MarketplaceRepository:
         query = Q(chef_ref_id__in=chef_refs, dish__isnull=True, dish_ref_id="")
         if chef:
             query |= Q(chef=chef, dish__isnull=True, dish_ref_id="")
-        reviews = list(MarketplaceReview.objects.filter(query, is_public=True).order_by("-created_at"))
+        reviews = list(
+            MarketplaceReview.objects.filter(query, is_public=True, deleted_at__isnull=True).order_by("-created_at")
+        )
         if not reviews:
             return {
                 "rating_avg": 0,
@@ -191,12 +215,18 @@ class MarketplaceRepository:
         }
 
     def get_dish_reviews(self, dish_id: str):
-        dish = Dish.objects.filter(id=str(dish_id), status="published").select_related("chef").first()
+        dish = (
+            Dish.objects.filter(id=str(dish_id), status="published", deleted_at__isnull=True)
+            .select_related("chef")
+            .first()
+        )
         dish_refs = [str(dish_id)]
         query = Q(dish_ref_id__in=dish_refs)
         if dish:
             query |= Q(dish=dish)
-        reviews = list(MarketplaceReview.objects.filter(query, is_public=True).order_by("-created_at"))
+        reviews = list(
+            MarketplaceReview.objects.filter(query, is_public=True, deleted_at__isnull=True).order_by("-created_at")
+        )
         if not reviews:
             return {"rating_avg": 0, "reviews_count": 0, "reviews": []}
         avg = sum([review.rating for review in reviews]) / len(reviews)
@@ -221,7 +251,7 @@ class MarketplaceRepository:
             return None
         profile = _optional_related(chef, "chef_profile")
         availability = _optional_related(chef, "availability")
-        dishes = Dish.objects.filter(chef=chef, status="published").order_by("-updated_at")
+        dishes = Dish.objects.filter(chef=chef, status="published", deleted_at__isnull=True).order_by("-updated_at")
         return {
             "id": str(chef.supabase_user_id),
             "name": _chef_public_name(chef, profile),
@@ -289,7 +319,11 @@ class MarketplaceRepository:
 
     def create_dish_review(self, user_id: str, dish_id: str, payload: dict):
         user = self._require_user(user_id)
-        dish = Dish.objects.filter(id=str(dish_id), status="published").select_related("chef").first()
+        dish = (
+            Dish.objects.filter(id=str(dish_id), status="published", deleted_at__isnull=True)
+            .select_related("chef")
+            .first()
+        )
         if not dish:
             raise ValueError("Plato no encontrado.")
         rating = int(payload.get("rating", 0))
@@ -323,7 +357,7 @@ class MarketplaceRepository:
 
     def favorite_target_exists(self, favorite_type: str, ref_id: str):
         if favorite_type == MarketplaceFavorite.TYPE_DISH:
-            return Dish.objects.filter(id=str(ref_id), status="published").exists()
+            return Dish.objects.filter(id=str(ref_id), status="published", deleted_at__isnull=True).exists()
         if favorite_type == MarketplaceFavorite.TYPE_CHEF:
             return self._find_chef_by_ref(ref_id) is not None
         return False
@@ -348,7 +382,11 @@ class MarketplaceRepository:
 
     def _favorite_target(self, favorite_type: str, ref_id: str):
         if favorite_type == MarketplaceFavorite.TYPE_DISH:
-            dish = Dish.objects.filter(id=str(ref_id)).select_related("chef", "chef__chef_profile").first()
+            dish = (
+                Dish.objects.filter(id=str(ref_id), deleted_at__isnull=True)
+                .select_related("chef", "chef__chef_profile")
+                .first()
+            )
             if not dish:
                 return None
             profile = _optional_related(dish.chef, "chef_profile")

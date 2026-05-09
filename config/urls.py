@@ -15,6 +15,8 @@ urlpatterns = [
     path('api/v1/marketplace/', include('modules.marketplace_platos.urls')),
     path('api/v1/chef/', include('modules.gestion_cocinero.urls')),
     path('api/v1/uploads/', include('modules.storage_uploads.urls')),
+    path('api/v1/sync/', include('modules.sync.urls')),
+    path('sync/', include('modules.sync.urls')),
     path('api/v1/ai/', include('modules.asistencia_inteligente.urls')),
     path('api/v1/orders/', include('modules.pedidos_checkout_pagos.urls')),
     path('api/v1/logistics/', include('modules.delivery_logistica.urls')),

@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     'modules.gestion_cocinero',
     'modules.marketplace_platos',
     'modules.storage_uploads',
+    'modules.sync',
 ]
 
 MIDDLEWARE = [
@@ -66,7 +67,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': ('rest_framework.permissions.AllowAny',),
 }
 
-CORS_ALLOWED_ORIGINS = [x.strip() for x in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',') if x.strip()]
+CORS_ALLOWED_ORIGINS = [
+    x.strip()
+    for x in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:4173').split(',')
+    if x.strip()
+]
 AI_SERVICE_URL = os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
 AI_SERVICE_TOKEN = os.getenv('AI_SERVICE_TOKEN', '')
 

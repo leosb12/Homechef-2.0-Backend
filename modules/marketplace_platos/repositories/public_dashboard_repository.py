@@ -89,7 +89,7 @@ class PublicDashboardRepository:
         for menu in active_menus:
             for item in menu.items.select_related("dish").all():
                 dish = item.dish
-                if dish.status != "published":
+                if dish.status != "published" or dish.deleted_at is not None:
                     continue
 
                 menu_status = str(item.status or "available")
@@ -107,7 +107,7 @@ class PublicDashboardRepository:
                 included_dish_ids.add(dish.id)
 
         published_dishes = (
-            Dish.objects.filter(status="published")
+            Dish.objects.filter(status="published", deleted_at__isnull=True)
             .exclude(id__in=included_dish_ids)
             .select_related("chef", "chef__chef_profile", "chef__availability")
         )
@@ -227,6 +227,7 @@ def _rating_for_chef(chef):
         dish__isnull=True,
         dish_ref_id="",
         is_public=True,
+        deleted_at__isnull=True,
     )
     if not reviews.exists():
         return 0.0
