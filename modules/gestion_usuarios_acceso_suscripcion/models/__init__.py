@@ -24,6 +24,8 @@ class UserProfile(models.Model):
     role = models.CharField(max_length=30, choices=ROLE_CHOICES, default=ROLE_CLIENT)
     phone = models.CharField(max_length=30, blank=True)
     address = models.CharField(max_length=255, blank=True)
+    location_latitude = models.FloatField(null=True, blank=True)
+    location_longitude = models.FloatField(null=True, blank=True)
     accept_terms = models.BooleanField(default=False)
     notify_gmail = models.BooleanField(default=True)
     notify_push = models.BooleanField(default=True)

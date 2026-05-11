@@ -19,7 +19,16 @@ def module_home(request):
 @permission_classes([AllowAny])
 def public_dashboard(request):
     try:
-        payload = PublicDashboardService().get_public_dashboard()
+        latitude = request.query_params.get("latitude", "").strip()
+        longitude = request.query_params.get("longitude", "").strip()
+        location_available = request.query_params.get("location_available", "true").strip().lower()
+        if location_available == "false":
+            latitude = ""
+            longitude = ""
+        payload = PublicDashboardService().get_public_dashboard(
+            latitude=latitude,
+            longitude=longitude,
+        )
         serializer = PublicDashboardResponseSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
@@ -43,6 +52,7 @@ def client_explore_dashboard(request):
         sort = request.query_params.get("sort", "").strip().lower()
         min_price = request.query_params.get("min_price", "").strip()
         max_price = request.query_params.get("max_price", "").strip()
+        max_distance_km = request.query_params.get("max_distance_km", "").strip()
         availability = request.query_params.get("availability", "").strip().lower()
         cuisine_type = request.query_params.get("cuisine_type", "").strip().lower()
         diet_type = request.query_params.get("diet_type", "").strip().lower()
@@ -58,6 +68,7 @@ def client_explore_dashboard(request):
             sort=sort,
             min_price=min_price,
             max_price=max_price,
+            max_distance_km=max_distance_km,
             availability=availability,
             cuisine_type=cuisine_type,
             diet_type=diet_type,

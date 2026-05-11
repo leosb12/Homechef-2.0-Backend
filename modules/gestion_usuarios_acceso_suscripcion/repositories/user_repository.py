@@ -62,7 +62,7 @@ class UserRepository:
         raise NotImplementedError("Las credenciales se validan con Supabase Auth, no con Django.")
 
     def update_password(self, *args, **kwargs):
-        raise NotImplementedError("Las contrasenas se administran con Supabase Auth.")
+        raise NotImplementedError("Las Contraseñas se administran con Supabase Auth.")
 
     def _find_profile(self, user_id: str):
         try:

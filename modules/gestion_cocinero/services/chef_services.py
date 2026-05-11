@@ -1,3 +1,5 @@
+import re
+
 from ..repositories.chef_repository import ChefRepository
 from .availability_rules import normalize_weekly_schedule
 
@@ -116,6 +118,10 @@ class ChefServices:
     def save_dish(self, chef_id: str, payload: dict):
         if not str(payload.get("name", "")).strip():
             raise ValueError("Nombre del plato es obligatorio.")
+        if not str(payload.get("description", "")).strip():
+            raise ValueError("Descripcion del plato es obligatoria.")
+        if not str(payload.get("schedule", "")).strip():
+            raise ValueError("Horario disponible del plato es obligatorio.")
         try:
             price = float(payload.get("price", 0))
         except (TypeError, ValueError):
@@ -128,6 +134,20 @@ class ChefServices:
             raise ValueError("Precio invalido.")
         if portions <= 0:
             raise ValueError("Porciones invalidas.")
+        payload["ingredients"] = self._clean_list(payload.get("ingredients", []))
+        payload["tags"] = self._clean_list(payload.get("tags", []))
+        payload["allergens"] = self._clean_list(payload.get("allergens", []))
+        if not payload["ingredients"]:
+            raise ValueError("Debe seleccionar al menos un ingrediente.")
+        if not payload["tags"]:
+            raise ValueError("Debe seleccionar al menos una etiqueta.")
+        image_url = str(payload.get("image_url", "")).strip()
+        if image_url and not (
+            image_url.startswith("http://")
+            or image_url.startswith("https://")
+            or image_url.startswith("/")
+        ):
+            raise ValueError("Imagen del plato invalida.")
         dish = self.repo.save_dish(chef_id, payload)
         self.repo.log("chef_dish_saved", {"chef_id": chef_id, "dish_id": dish["_id"], "status": dish.get("status")})
         return dish
@@ -145,6 +165,11 @@ class ChefServices:
         self.repo.delete_dish(chef_id, dish_id)
         self.repo.log("chef_dish_deleted", {"chef_id": chef_id, "dish_id": dish_id})
 
+    def _clean_list(self, raw_value):
+        if not isinstance(raw_value, list):
+            return []
+        return [str(item).strip() for item in raw_value if str(item).strip()]
+
     # CU-16
     def get_daily_menu(self, chef_id: str):
         return self.repo.get_daily_menu(chef_id)
@@ -152,19 +177,67 @@ class ChefServices:
     def save_daily_menu(self, chef_id: str, payload: dict):
         items = payload.get("items", [])
         is_active = bool(payload.get("is_active", False))
+        registered_dishes = self.repo.list_dishes(chef_id)
+        dish_by_id = {str(dish.get("_id") or dish.get("id")): dish for dish in registered_dishes}
+        if is_active and not registered_dishes:
+            raise ValueError("Primero debes registrar platos para crear el menu del dia.")
         if is_active and not items:
             raise ValueError("Debes seleccionar al menos un plato.")
         for item in items:
+            dish_id = str(item.get("dish_id") or item.get("id") or "")
+            dish = dish_by_id.get(dish_id)
+            if not dish:
+                raise ValueError(f"Plato no encontrado en el menu: {dish_id}")
+            if dish.get("status") != "published":
+                raise ValueError("Solo puedes agregar platos publicados al menu del dia.")
             try:
                 portions = int(item.get("portions", 0))
             except (TypeError, ValueError):
                 portions = 0
             if portions <= 0:
                 raise ValueError("Cantidad no valida en el menu del dia.")
+            if portions > int(dish.get("portions") or 0):
+                raise ValueError("La cantidad supera las porciones disponibles del plato.")
             if str(item.get("status", "available")) not in {"available", "paused", "unavailable", "sold_out"}:
                 raise ValueError("Estado invalido en el menu del dia.")
-        if is_active and not payload.get("schedule"):
+        schedule = str(payload.get("schedule", "")).strip()
+        if is_active and not schedule:
             raise ValueError("Debes definir horario del menu.")
+        if is_active:
+            availability = self.repo.get_availability(chef_id)
+            if not availability.get("is_active") or not availability.get("weekly_schedule"):
+                raise ValueError("Configura disponibilidad del cocinero antes de activar el menu.")
+            self._validate_menu_schedule(schedule, availability)
         menu = self.repo.save_daily_menu(chef_id, payload)
         self.repo.log("chef_daily_menu_updated", {"chef_id": chef_id, "items_count": len(items)})
         return menu
+
+    def _validate_menu_schedule(self, schedule: str, availability: dict):
+        match = re.search(r"(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})", schedule)
+        if not match:
+            raise ValueError("Horario incompatible. Usa formato HH:MM - HH:MM.")
+        start_time, end_time = match.groups()
+        start_minutes = self._minutes(start_time)
+        end_minutes = self._minutes(end_time)
+        if start_minutes is None or end_minutes is None or end_minutes <= start_minutes:
+            raise ValueError("Horario incompatible con la disponibilidad del cocinero.")
+        for slot in availability.get("weekly_schedule", []):
+            slot_start = self._minutes(slot.get("start_time"))
+            slot_end = self._minutes(slot.get("end_time"))
+            if (
+                slot_start is not None
+                and slot_end is not None
+                and start_minutes >= slot_start
+                and end_minutes <= slot_end
+            ):
+                return
+        raise ValueError("Horario incompatible con la disponibilidad del cocinero.")
+
+    def _minutes(self, value):
+        try:
+            hour, minute = [int(part) for part in str(value).split(":")]
+        except (TypeError, ValueError):
+            return None
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour * 60 + minute

@@ -21,6 +21,9 @@ class StripeSandboxPaymentProvider(PaymentProvider):
 
         stripe.api_key = settings.STRIPE_SECRET_KEY
         try:
+            payload = payload or {}
+            success_url = payload.get("success_url") or settings.STRIPE_SUCCESS_URL
+            cancel_url = payload.get("cancel_url") or settings.STRIPE_CANCEL_URL
             metadata = {
                 "payment_id": str(payment.id),
                 "subscription_id": str(subscription.id),
@@ -31,8 +34,8 @@ class StripeSandboxPaymentProvider(PaymentProvider):
             session = stripe.checkout.Session.create(
                 mode="payment",
                 payment_method_types=["card"],
-                success_url=with_query_param(settings.STRIPE_SUCCESS_URL, "session_id", "{CHECKOUT_SESSION_ID}"),
-                cancel_url=with_query_param(settings.STRIPE_CANCEL_URL, "session_id", "{CHECKOUT_SESSION_ID}"),
+                success_url=with_query_param(success_url, "session_id", "{CHECKOUT_SESSION_ID}"),
+                cancel_url=with_query_param(cancel_url, "session_id", "{CHECKOUT_SESSION_ID}"),
                 line_items=[
                     {
                         "price_data": {

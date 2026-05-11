@@ -5,8 +5,11 @@ class PublicDashboardService:
     def __init__(self):
         self.repository = PublicDashboardRepository()
 
-    def get_public_dashboard(self):
-        dishes = self.repository.fetch_public_dishes()
+    def get_public_dashboard(self, latitude: str = "", longitude: str = ""):
+        dishes = self.repository.fetch_public_dishes(
+            latitude=latitude,
+            longitude=longitude,
+        )
         if not dishes:
             return {
                 "status": "empty",

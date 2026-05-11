@@ -10,8 +10,8 @@ from modules.marketplace_platos.models import MarketplaceReview
 class PublicDashboardRepository:
     """PostgreSQL repository for CU-07/CU-08 based on active chef menus."""
 
-    def fetch_public_dishes(self):
-        docs = self._build_marketplace_docs()
+    def fetch_public_dishes(self, latitude: str = "", longitude: str = ""):
+        docs = self._build_marketplace_docs(latitude=latitude, longitude=longitude)
         docs.sort(key=lambda d: (0 if d["is_featured"] else 1, d["name"].lower()))
         return docs
 
@@ -22,6 +22,7 @@ class PublicDashboardRepository:
         sort: str = "",
         min_price: str = "",
         max_price: str = "",
+        max_distance_km: str = "",
         availability: str = "",
         cuisine_type: str = "",
         diet_type: str = "",
@@ -32,6 +33,7 @@ class PublicDashboardRepository:
         q = str(query or "").strip().lower()
         min_value = _float_or_none(min_price)
         max_value = _float_or_none(max_price)
+        max_distance_value = _float_or_none(max_distance_km)
 
         filtered = []
         for doc in docs:
@@ -60,6 +62,10 @@ class PublicDashboardRepository:
                 continue
             if max_value is not None and doc["approx_price"] > max_value:
                 continue
+            if max_distance_value is not None:
+                distance_km = doc.get("distance_km")
+                if distance_km is None or distance_km > max_distance_value:
+                    continue
             filtered.append(doc)
 
         if sort == "price_asc":
@@ -70,6 +76,13 @@ class PublicDashboardRepository:
             filtered.sort(key=lambda d: d["rating"], reverse=True)
         elif sort == "popular_desc":
             filtered.sort(key=lambda d: d["popularity"], reverse=True)
+        elif sort == "distance_asc":
+            filtered.sort(
+                key=lambda d: (
+                    d["distance_km"] is None,
+                    d["distance_km"] if d["distance_km"] is not None else 0,
+                )
+            )
         else:
             filtered.sort(key=lambda d: (0 if d["is_featured"] else 1, d["name"].lower()))
 
@@ -251,7 +264,10 @@ def _distance_km(origin_lat, origin_lng, destination_lat, destination_lng):
         + cos(radians(origin_lat)) * cos(radians(destination_lat)) * sin(delta_lng / 2) ** 2
     )
     c = 2 * asin(sqrt(a))
-    return round(earth_radius_km * c, 1)
+    distance = earth_radius_km * c
+    if distance < 1:
+        return round(distance, 3)
+    return round(distance, 1)
 
 
 def _float_or_none(value):

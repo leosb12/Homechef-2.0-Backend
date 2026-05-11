@@ -69,7 +69,10 @@ REST_FRAMEWORK = {
 
 CORS_ALLOWED_ORIGINS = [
     x.strip()
-    for x in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:4173').split(',')
+    for x in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://localhost:4173,https://homechef-2-0-frontend.vercel.app',
+    ).split(',')
     if x.strip()
 ]
 AI_SERVICE_URL = os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
@@ -85,8 +88,14 @@ STRIPE_MODE = os.getenv('STRIPE_MODE', 'sandbox')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
-STRIPE_SUCCESS_URL = os.getenv('STRIPE_SUCCESS_URL', 'http://localhost:5173/chef/ai-subscription?payment=stripe_success')
-STRIPE_CANCEL_URL = os.getenv('STRIPE_CANCEL_URL', 'http://localhost:5173/chef/ai-subscription?payment=stripe_cancel')
+STRIPE_SUCCESS_URL = os.getenv(
+    'STRIPE_SUCCESS_URL',
+    'https://homechef-2-0-frontend.vercel.app/chef/ai-subscription?payment=stripe_success',
+)
+STRIPE_CANCEL_URL = os.getenv(
+    'STRIPE_CANCEL_URL',
+    'https://homechef-2-0-frontend.vercel.app/chef/ai-subscription?payment=stripe_cancel',
+)
 
 COINGATE_MODE = os.getenv('COINGATE_MODE', 'sandbox')
 COINGATE_API_BASE_URL = os.getenv('COINGATE_API_BASE_URL', 'https://api-sandbox.coingate.com/api/v2')
@@ -94,7 +103,13 @@ COINGATE_API_TOKEN = os.getenv('COINGATE_API_TOKEN', '')
 COINGATE_RECEIVE_CURRENCY = os.getenv('COINGATE_RECEIVE_CURRENCY', 'USD')
 COINGATE_CALLBACK_URL = os.getenv(
     'COINGATE_CALLBACK_URL',
-    'http://localhost:8000/api/ia/subscription/payments/coingate/callback/',
+    'https://homechef-2-0-backend.onrender.com/api/ia/subscription/payments/coingate/callback/',
 )
-COINGATE_SUCCESS_URL = os.getenv('COINGATE_SUCCESS_URL', 'http://localhost:5173/chef/ai-subscription?payment=coingate_success')
-COINGATE_CANCEL_URL = os.getenv('COINGATE_CANCEL_URL', 'http://localhost:5173/chef/ai-subscription?payment=coingate_cancel')
+COINGATE_SUCCESS_URL = os.getenv(
+    'COINGATE_SUCCESS_URL',
+    'https://homechef-2-0-frontend.vercel.app/chef/ai-subscription?payment=coingate_success',
+)
+COINGATE_CANCEL_URL = os.getenv(
+    'COINGATE_CANCEL_URL',
+    'https://homechef-2-0-frontend.vercel.app/chef/ai-subscription?payment=coingate_cancel',
+)

@@ -83,10 +83,12 @@ class MarketplaceRepository:
 
     def add_to_cart_stub(self, user_id: str, dish_id: str, quantity: int):
         dish = self.get_dish_detail(dish_id)
-        if not dish or not dish["is_available"]:
+        if not dish:
             return {"ok": False, "code": "dish_unavailable"}
         if not dish["chef"]["is_available"]:
             return {"ok": False, "code": "chef_unavailable"}
+        if not dish["is_available"]:
+            return {"ok": False, "code": "dish_unavailable"}
         if quantity <= 0 or quantity > dish["available_portions"]:
             return {"ok": False, "code": "invalid_quantity", "available_portions": dish["available_portions"]}
         return {"ok": True, "message": "Plato agregado al carrito correctamente (stub CU-24)."}

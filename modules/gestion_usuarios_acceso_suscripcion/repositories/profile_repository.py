@@ -16,9 +16,15 @@ class ProfileRepository:
             "first_name": profile.first_name,
             "last_name": profile.last_name,
             "full_name": profile.full_name,
+            "avatar_url": profile.avatar_url,
             "role": profile.role,
             "phone": profile.phone,
             "address": profile.address,
+            "location": {
+                "latitude": profile.location_latitude,
+                "longitude": profile.location_longitude,
+                "address": profile.address,
+            },
             "accept_terms": profile.accept_terms,
             "notify_gmail": profile.notify_gmail,
             "notify_push": profile.notify_push,
@@ -29,7 +35,16 @@ class ProfileRepository:
         profile = self._find_user(user_id)
         if not profile:
             return {}
-        allowed = {"phone", "address", "accept_terms", "notify_gmail", "notify_push"}
+        allowed = {
+            "phone",
+            "address",
+            "avatar_url",
+            "location_latitude",
+            "location_longitude",
+            "accept_terms",
+            "notify_gmail",
+            "notify_push",
+        }
         changed = []
         for field, value in payload.items():
             if field not in allowed:
@@ -90,10 +105,10 @@ class ProfileRepository:
         }
 
     def create_recovery_token(self, email: str):
-        raise NotImplementedError("La recuperacion de contrasena se gestiona con Supabase Auth.")
+        raise NotImplementedError("La recuperacion de Contraseña se gestiona con Supabase Auth.")
 
     def consume_recovery_token(self, token: str):
-        raise NotImplementedError("La recuperacion de contrasena se gestiona con Supabase Auth.")
+        raise NotImplementedError("La recuperacion de Contraseña se gestiona con Supabase Auth.")
 
     def log_event(self, event: str, details: dict):
         AuditEvent.objects.create(

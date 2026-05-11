@@ -19,15 +19,20 @@ class CoinGateSandboxPaymentProvider(PaymentProvider):
                 provider_response={"configured": False},
             )
 
+        payload = payload or {}
+        success_url = payload.get("success_url") or settings.COINGATE_SUCCESS_URL
+        cancel_url = payload.get("cancel_url") or settings.COINGATE_CANCEL_URL
+        callback_url = payload.get("callback_url") or settings.COINGATE_CALLBACK_URL
+
         order_id = f"homechef-ai-{payment.id}-{uuid4().hex}"
         body = {
             "order_id": order_id,
             "price_amount": str(payment.amount),
             "price_currency": payment.currency,
             "receive_currency": settings.COINGATE_RECEIVE_CURRENCY,
-            "callback_url": settings.COINGATE_CALLBACK_URL,
-            "success_url": with_query_param(settings.COINGATE_SUCCESS_URL, "coingate_order_id", order_id),
-            "cancel_url": with_query_param(settings.COINGATE_CANCEL_URL, "coingate_order_id", order_id),
+            "callback_url": callback_url,
+            "success_url": with_query_param(success_url, "coingate_order_id", order_id),
+            "cancel_url": with_query_param(cancel_url, "coingate_order_id", order_id),
             "title": f"Suscripcion IA HomeChef - {plan.name}",
             "description": "Pago de suscripcion IA HomeChef",
         }

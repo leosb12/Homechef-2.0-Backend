@@ -17,8 +17,10 @@ class ProfileService:
             "first_name": user.first_name,
             "last_name": user.last_name,
             "role": role,
+            "avatar_url": profile.get("avatar_url", ""),
             "phone": profile.get("phone", ""),
             "address": profile.get("address", ""),
+            "location": profile.get("location", {}),
             "notify_gmail": profile.get("notify_gmail", True),
             "notify_push": profile.get("notify_push", True),
             "chef_profile": chef_profile,
@@ -32,7 +34,20 @@ class ProfileService:
             basic_updates["last_name"] = payload["last_name"]
         if basic_updates:
             self.user_repo.update_basic_data(user.id, basic_updates)
-        profile_updates = {k: v for k, v in payload.items() if k in ("phone", "address", "notify_gmail", "notify_push")}
+        profile_updates = {
+            k: v
+            for k, v in payload.items()
+            if k
+            in (
+                "phone",
+                "address",
+                "avatar_url",
+                "location_latitude",
+                "location_longitude",
+                "notify_gmail",
+                "notify_push",
+            )
+        }
         self.profile_repo.save_profile(user.id, profile_updates)
         self.profile_repo.log_event("profile_updated", {"user_id": user.id, "fields": list(payload.keys())})
         fresh_user = self.user_repo.find_by_id(user.id)
@@ -40,4 +55,4 @@ class ProfileService:
 
     def change_password(self, user, current_password: str, new_password: str):
         self.profile_repo.log_event("password_change_requested_in_django", {"user_id": user.id})
-        raise NotImplementedError("Las contrasenas se administran con Supabase Auth desde el cliente.")
+        raise NotImplementedError("Las Contraseñas se administran con Supabase Auth desde el cliente.")

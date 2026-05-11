@@ -93,7 +93,7 @@ def logout_view(request):
 @permission_classes([AllowAny])
 def recover_password_request(request):
     return Response(
-        {"detail": "La recuperacion de contrasena se gestiona con Supabase Auth desde el cliente."},
+        {"detail": "La recuperacion de Contraseña se gestiona con Supabase Auth desde el cliente."},
         status=status.HTTP_410_GONE,
     )
 
@@ -102,7 +102,7 @@ def recover_password_request(request):
 @permission_classes([AllowAny])
 def recover_password_confirm(request):
     return Response(
-        {"detail": "La recuperacion de contrasena se gestiona con Supabase Auth desde el cliente."},
+        {"detail": "La recuperacion de Contraseña se gestiona con Supabase Auth desde el cliente."},
         status=status.HTTP_410_GONE,
     )
 
@@ -124,6 +124,6 @@ def profile_view(request):
 @permission_classes([IsAuthenticated])
 def change_password(request):
     return Response(
-        {"detail": "Las contrasenas se administran con Supabase Auth desde el cliente."},
+        {"detail": "Las Contraseñas se administran con Supabase Auth desde el cliente."},
         status=status.HTTP_410_GONE,
     )

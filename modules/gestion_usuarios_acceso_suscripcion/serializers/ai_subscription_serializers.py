@@ -63,6 +63,9 @@ class SubscribeRequestSerializer(serializers.Serializer):
     plan_id = serializers.IntegerField(min_value=1)
     payment_provider = serializers.ChoiceField(choices=SANDBOX_PAYMENT_PROVIDERS)
     payment_method_id = serializers.IntegerField(required=False, allow_null=True)
+    success_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    cancel_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    return_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
 
 
 class ChangePlanRequestSerializer(SubscribeRequestSerializer):
@@ -73,6 +76,9 @@ class ChangePlanRequestSerializer(SubscribeRequestSerializer):
 class RenewRequestSerializer(serializers.Serializer):
     payment_provider = serializers.ChoiceField(choices=SANDBOX_PAYMENT_PROVIDERS)
     payment_method_id = serializers.IntegerField(required=False, allow_null=True)
+    success_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    cancel_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    return_url = serializers.CharField(required=False, allow_blank=True, max_length=1000)
 
 
 class CancelSubscriptionRequestSerializer(serializers.Serializer):

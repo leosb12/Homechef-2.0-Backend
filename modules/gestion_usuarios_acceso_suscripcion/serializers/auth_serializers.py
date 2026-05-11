@@ -6,15 +6,13 @@ ROLE_CHOICES = ("CLIENTE", "COCINERO")
 
 def validate_password_rules(password: str):
     if len(password) < 8:
-        raise serializers.ValidationError("La contrasena debe tener al menos 8 caracteres.")
+        raise serializers.ValidationError("La Contraseña debe tener al menos 8 caracteres.")
     if not re.search(r"[A-Z]", password):
-        raise serializers.ValidationError("La contrasena debe incluir una letra mayuscula.")
+        raise serializers.ValidationError("La Contraseña debe incluir una letra mayúscula.")
     if not re.search(r"[a-z]", password):
-        raise serializers.ValidationError("La contrasena debe incluir una letra minuscula.")
+        raise serializers.ValidationError("La Contraseña debe incluir una letra minúscula.")
     if not re.search(r"[0-9]", password):
-        raise serializers.ValidationError("La contrasena debe incluir un numero.")
-    if not re.search(r"[^A-Za-z0-9]", password):
-        raise serializers.ValidationError("La contrasena debe incluir un caracter especial.")
+        raise serializers.ValidationError("La Contraseña debe incluir un número.")
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -89,10 +87,22 @@ class RecoverPasswordConfirmSerializer(serializers.Serializer):
 class UpdateProfileSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=100, required=False)
     last_name = serializers.CharField(max_length=100, required=False)
+    avatar_url = serializers.URLField(max_length=1000, required=False, allow_blank=True)
     phone = serializers.CharField(max_length=30, required=False, allow_blank=True)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    location_latitude = serializers.FloatField(required=False, allow_null=True)
+    location_longitude = serializers.FloatField(required=False, allow_null=True)
     notify_gmail = serializers.BooleanField(required=False)
     notify_push = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        latitude = attrs.get("location_latitude")
+        longitude = attrs.get("location_longitude")
+        if latitude is not None and (latitude < -90 or latitude > 90):
+            raise serializers.ValidationError({"location_latitude": "Latitud inválida."})
+        if longitude is not None and (longitude < -180 or longitude > 180):
+            raise serializers.ValidationError({"location_longitude": "Longitud inválida."})
+        return attrs
 
 
 class ChangePasswordSerializer(serializers.Serializer):
