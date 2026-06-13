@@ -9,8 +9,8 @@ FUNCIONES_IA = {
     "asistente_ia": {
         "codigo": "asistente_ia",
         "nombre": "Asistente IA",
-        "habilitada": False,
-        "implementada": False,
+        "habilitada": True,
+        "implementada": True,
         "plan_flag": None,
     },
     "vision_artificial": {
