@@ -1,5 +1,6 @@
 from ..repositories.profile_repository import ProfileRepository
 from ..repositories.user_repository import UserRepository
+from modules.storage_uploads.services import StorageUploadService
 
 ROLE_REDIRECTS = {
     "CLIENTE": "/client/explore",
@@ -56,6 +57,34 @@ class AuthService:
                     },
                     "schedule": payload["chef_schedule"],
                     "status": "pending_validation",
+                },
+            )
+        if role == "REPARTIDOR":
+            upload_service = StorageUploadService()
+            raw_user = self.user_repo.find_raw_by_email(email)
+            front_file = payload["delivery_vehicle_front_photo"]
+            rear_file = payload["delivery_vehicle_rear_photo"]
+            front_upload = upload_service.upload_for_owner(
+                raw_user,
+                front_file,
+                file_type="delivery_vehicle_front",
+            )
+            rear_upload = upload_service.upload_for_owner(
+                raw_user,
+                rear_file,
+                file_type="delivery_vehicle_rear",
+            )
+            self.profile_repo.save_delivery_profile(
+                supabase_user_id,
+                {
+                    "vehicle_type": payload["delivery_vehicle_type"],
+                    "vehicle_brand": payload["delivery_vehicle_brand"],
+                    "vehicle_model": payload["delivery_vehicle_model"],
+                    "vehicle_plate": payload["delivery_vehicle_plate"],
+                    "vehicle_front_image_url": front_upload.public_url,
+                    "vehicle_rear_image_url": rear_upload.public_url,
+                    "approval_status": "recien_registrado",
+                    "status_notes": "Solicitud enviada para validacion administrativa.",
                 },
             )
 

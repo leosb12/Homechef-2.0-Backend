@@ -9,6 +9,7 @@ class PublicDishSerializer(serializers.Serializer):
     chef_name = serializers.CharField()
     is_featured = serializers.BooleanField()
     is_available = serializers.BooleanField(required=False)
+    available_portions = serializers.IntegerField(required=False)
     distance_km = serializers.FloatField(required=False, allow_null=True)
     rating = serializers.FloatField(required=False)
     popularity = serializers.IntegerField(required=False)

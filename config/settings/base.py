@@ -19,6 +19,10 @@ INSTALLED_APPS = [
     'modules.marketplace_platos',
     'modules.storage_uploads',
     'modules.sync',
+    'modules.asistencia_inteligente',
+    'modules.pedidos_checkout_pagos',
+    'modules.delivery_logistica',
+    'modules.confianza_administracion_seguridad',
 ]
 
 MIDDLEWARE = [
@@ -75,6 +79,14 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if x.strip()
 ]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    x.strip()
+    for x in os.getenv(
+        'CORS_ALLOWED_ORIGIN_REGEXES',
+        r'^https?://localhost(:\d+)?$,^https?://127\.0\.0\.1(:\d+)?$',
+    ).split(',')
+    if x.strip()
+]
 AI_SERVICE_URL = os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
 AI_SERVICE_TOKEN = os.getenv('AI_SERVICE_TOKEN', '')
 
@@ -112,4 +124,35 @@ COINGATE_SUCCESS_URL = os.getenv(
 COINGATE_CANCEL_URL = os.getenv(
     'COINGATE_CANCEL_URL',
     'https://homechef-2-0-frontend.vercel.app/chef/ai-subscription?payment=coingate_cancel',
+)
+
+ORDER_COINGATE_CALLBACK_URL = os.getenv(
+    'ORDER_COINGATE_CALLBACK_URL',
+    'https://homechef-2-0-backend.onrender.com/api/v1/orders/payments/bitcoin-coingate/callback/',
+)
+ORDER_COINGATE_SUCCESS_URL = os.getenv(
+    'ORDER_COINGATE_SUCCESS_URL',
+    'https://homechef-2-0-frontend.vercel.app/client/payments/bitcoin-coingate/return?payment=coingate_success',
+)
+ORDER_COINGATE_CANCEL_URL = os.getenv(
+    'ORDER_COINGATE_CANCEL_URL',
+    'https://homechef-2-0-frontend.vercel.app/client/payments/bitcoin-coingate/return?payment=coingate_cancel',
+)
+ORDER_STRIPE_SUCCESS_URL = os.getenv(
+    'ORDER_STRIPE_SUCCESS_URL',
+    'https://homechef-2-0-frontend.vercel.app/client/payments/stripe/return?payment=stripe_success',
+)
+ORDER_STRIPE_CANCEL_URL = os.getenv(
+    'ORDER_STRIPE_CANCEL_URL',
+    'https://homechef-2-0-frontend.vercel.app/client/payments/stripe/return?payment=stripe_cancel',
+)
+
+OSM_ROUTING_BASE_URL = os.getenv('OSM_ROUTING_BASE_URL', '')
+OSM_ROUTING_TIMEOUT_SECONDS = int(os.getenv('OSM_ROUTING_TIMEOUT_SECONDS', '8'))
+
+FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '')
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON', '')
+FRONTEND_PUBLIC_BASE_URL = os.getenv(
+    'FRONTEND_PUBLIC_BASE_URL',
+    'https://homechef-2-0-frontend.vercel.app',
 )

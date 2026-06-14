@@ -5,6 +5,7 @@ from django.db.models import Q
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, Dish
 from modules.gestion_cocinero.services.availability_rules import is_open_now
 from modules.marketplace_platos.models import MarketplaceReview
+from modules.pedidos_checkout_pagos.services import build_dish_stock_snapshot
 
 
 class PublicDashboardRepository:
@@ -108,14 +109,7 @@ class PublicDashboardRepository:
                 menu_status = str(item.status or "available")
                 portions = int(item.portions or 0)
                 result.append(
-                    self._dish_doc(
-                        dish,
-                        menu=menu,
-                        portions=portions,
-                        menu_status=menu_status,
-                        client_lat=client_lat,
-                        client_lng=client_lng,
-                    )
+                    self._dish_doc(dish, menu=menu, menu_item=item, client_lat=client_lat, client_lng=client_lng)
                 )
                 included_dish_ids.add(dish.id)
 
@@ -126,13 +120,7 @@ class PublicDashboardRepository:
         )
         for dish in published_dishes:
             result.append(
-                self._dish_doc(
-                    dish,
-                    portions=int(dish.portions or 0),
-                    menu_status="available",
-                    client_lat=client_lat,
-                    client_lng=client_lng,
-                )
+                self._dish_doc(dish, client_lat=client_lat, client_lng=client_lng)
             )
 
         return result
@@ -141,16 +129,20 @@ class PublicDashboardRepository:
         self,
         dish: Dish,
         menu: DailyMenu | None = None,
-        portions: int = 0,
-        menu_status: str = "available",
+        menu_item=None,
         client_lat: float | None = None,
         client_lng: float | None = None,
     ):
-        chef_available = _chef_is_available(dish.chef)
         tags = _normalize_list(dish.tags)
         profile = _optional_related(dish.chef, "chef_profile")
         rating = _rating_for_chef(dish.chef)
-        is_available = menu_status in {"available", "published"} and portions > 0 and chef_available
+        availability = _optional_related(dish.chef, "availability")
+        snapshot = build_dish_stock_snapshot(
+            dish=dish,
+            menu=menu,
+            menu_item=menu_item,
+            availability=availability,
+        )
         distance_km = _distance_km(
             client_lat,
             client_lng,
@@ -165,7 +157,8 @@ class PublicDashboardRepository:
             "approx_price": float(dish.price),
             "chef_name": _chef_name(dish.chef, profile),
             "is_featured": "DESTACADO" in tags or bool(menu and menu.is_active),
-            "is_available": is_available,
+            "is_available": snapshot.is_available,
+            "available_portions": snapshot.available_portions,
             "distance_km": distance_km,
             "rating": rating,
             "popularity": 0,

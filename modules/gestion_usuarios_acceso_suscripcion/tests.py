@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -12,6 +13,7 @@ from modules.gestion_usuarios_acceso_suscripcion.models import (
     AISubscriptionPayment,
     AISubscriptionPlan,
     ChefAISubscription,
+    DeliveryProfile,
     UserProfile,
     UsoIA,
 )
@@ -440,3 +442,57 @@ class IAAccessServiceTests(TestCase):
         uso = UsoIA.objects.get()
         self.assertFalse(uso.permitido)
         self.assertEqual(uso.codigo_resultado, "IA_NO_IMPLEMENTADA")
+
+
+class DeliveryRegistrationTests(TestCase):
+    @patch("modules.gestion_usuarios_acceso_suscripcion.services.auth_service.StorageUploadService.upload_for_owner")
+    def test_register_delivery_profile_creates_vehicle_record(self, upload_mock):
+        api = APIClient()
+        upload_mock.side_effect = [
+            SimpleNamespace(public_url="https://cdn.test/front.jpg"),
+            SimpleNamespace(public_url="https://cdn.test/rear.jpg"),
+        ]
+
+        response = api.post(
+            "/api/v1/auth/register/",
+            {
+                "supabase_user_id": str(uuid4()),
+                "first_name": "Rider",
+                "last_name": "Demo",
+                "email": "rider.demo@test.com",
+                "phone": "70000001",
+                "role": UserProfile.ROLE_DELIVERY,
+                "accept_terms": "true",
+                "delivery_vehicle_type": "motocicleta",
+                "delivery_vehicle_brand": "Honda",
+                "delivery_vehicle_model": "CB190R",
+                "delivery_vehicle_plate": "1234-ABC",
+                "delivery_vehicle_front_photo": SimpleUploadedFile(
+                    "front.jpg",
+                    b"front-image",
+                    content_type="image/jpeg",
+                ),
+                "delivery_vehicle_rear_photo": SimpleUploadedFile(
+                    "rear.jpg",
+                    b"rear-image",
+                    content_type="image/jpeg",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        profile = UserProfile.objects.get(email="rider.demo@test.com")
+        delivery_profile = DeliveryProfile.objects.get(user=profile)
+        self.assertEqual(profile.role, UserProfile.ROLE_DELIVERY)
+        self.assertEqual(delivery_profile.vehicle_type, "motocicleta")
+        self.assertEqual(delivery_profile.vehicle_brand, "Honda")
+        self.assertEqual(delivery_profile.vehicle_model, "CB190R")
+        self.assertEqual(delivery_profile.vehicle_plate, "1234-ABC")
+        self.assertEqual(
+            delivery_profile.approval_status,
+            DeliveryProfile.ApprovalStatus.RECENTLY_REGISTERED,
+        )
+        self.assertEqual(delivery_profile.vehicle_front_image_url, "https://cdn.test/front.jpg")
+        self.assertEqual(delivery_profile.vehicle_rear_image_url, "https://cdn.test/rear.jpg")
+        self.assertEqual(upload_mock.call_count, 2)

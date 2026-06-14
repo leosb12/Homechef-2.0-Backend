@@ -11,6 +11,7 @@ class ProfileService:
         role = user.role
         profile = self.profile_repo.get_profile(user.id)
         chef_profile = self.profile_repo.get_chef_profile(user.id) if role == "COCINERO" else None
+        delivery_profile = self.profile_repo.get_delivery_profile(user.id) if role == "REPARTIDOR" else None
         return {
             "id": user.id,
             "email": user.email,
@@ -24,6 +25,7 @@ class ProfileService:
             "notify_gmail": profile.get("notify_gmail", True),
             "notify_push": profile.get("notify_push", True),
             "chef_profile": chef_profile,
+            "delivery_profile": delivery_profile,
         }
 
     def update_profile(self, user, payload: dict):

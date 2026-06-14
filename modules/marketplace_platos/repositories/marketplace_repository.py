@@ -8,11 +8,12 @@ from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, Daily
 from modules.gestion_cocinero.services.availability_rules import availability_summary, is_open_now
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.marketplace_platos.models import MarketplaceFavorite, MarketplacePreference, MarketplaceReview
+from modules.pedidos_checkout_pagos.services import DishStockService, StockValidationError, build_dish_stock_snapshot
 
 
 class MarketplaceRepository:
     def __init__(self):
-        pass
+        self.stock_service = DishStockService()
 
     def get_dish_detail(self, dish_id: str):
         dish = (
@@ -29,10 +30,13 @@ class MarketplaceRepository:
         if menu:
             menu_item = menu.items.filter(dish=dish).first()
 
-        portions = int((menu_item.portions if menu_item else dish.portions) or 0)
-        menu_status = str((menu_item.status if menu_item else "available") or "available")
         chef_available = _chef_is_available(dish.chef)
-        is_available = menu_status in {"available", "published"} and portions > 0 and chef_available
+        snapshot = build_dish_stock_snapshot(
+            dish=dish,
+            menu=menu,
+            menu_item=menu_item,
+            availability=_optional_related(dish.chef, "availability"),
+        )
 
         profile = _optional_related(dish.chef, "chef_profile")
         availability = _optional_related(dish.chef, "availability")
@@ -52,8 +56,8 @@ class MarketplaceRepository:
             "ingredients": dish.ingredients or [],
             "tags": dish.tags or [],
             "allergens": dish.allergens,
-            "available_portions": portions,
-            "is_available": is_available,
+            "available_portions": snapshot.available_portions,
+            "is_available": snapshot.is_available,
             "schedule": (menu.schedule if menu else "") or dish.schedule or getattr(profile, "schedule", "") or "",
             "delivery_available": _chef_accepts_delivery(dish.chef),
             "chef": {
@@ -82,15 +86,18 @@ class MarketplaceRepository:
         }
 
     def add_to_cart_stub(self, user_id: str, dish_id: str, quantity: int):
-        dish = self.get_dish_detail(dish_id)
-        if not dish:
-            return {"ok": False, "code": "dish_unavailable"}
-        if not dish["chef"]["is_available"]:
-            return {"ok": False, "code": "chef_unavailable"}
-        if not dish["is_available"]:
-            return {"ok": False, "code": "dish_unavailable"}
-        if quantity <= 0 or quantity > dish["available_portions"]:
-            return {"ok": False, "code": "invalid_quantity", "available_portions": dish["available_portions"]}
+        try:
+            snapshot = self.stock_service.validate_dish_request(dish_id, quantity)
+        except StockValidationError as exc:
+            if exc.code == "chef_unavailable":
+                return {"ok": False, "code": "chef_unavailable"}
+            if exc.code == "invalid_quantity":
+                return {"ok": False, "code": "invalid_quantity", "available_portions": 0}
+            return {
+                "ok": False,
+                "code": "invalid_quantity" if exc.code == "insufficient_portions" else "dish_unavailable",
+                "available_portions": exc.details.get("available_portions", 0),
+            }
         return {"ok": True, "message": "Plato agregado al carrito correctamente (stub CU-24)."}
 
     def list_favorites(self, user_id: str):

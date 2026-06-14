@@ -45,6 +45,48 @@ class UserProfile(models.Model):
         return self.email
 
 
+class DeliveryProfile(models.Model):
+    class VehicleType(models.TextChoices):
+        MOTORCYCLE = "motocicleta", "Motocicleta"
+        CAR = "vehiculo", "Vehiculo"
+
+    class ApprovalStatus(models.TextChoices):
+        RECENTLY_REGISTERED = "recien_registrado", "Recien registrado"
+        ACTIVE = "activo", "Activo"
+        SUSPENDED = "suspendido", "Suspendido"
+
+    user = models.OneToOneField(
+        UserProfile,
+        on_delete=models.CASCADE,
+        related_name="delivery_profile",
+    )
+    vehicle_type = models.CharField(max_length=20, choices=VehicleType.choices)
+    vehicle_brand = models.CharField(max_length=120)
+    vehicle_model = models.CharField(max_length=120)
+    vehicle_plate = models.CharField(max_length=40)
+    vehicle_front_image_url = models.URLField(max_length=1000, blank=True)
+    vehicle_rear_image_url = models.URLField(max_length=1000, blank=True)
+    approval_status = models.CharField(
+        max_length=30,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.RECENTLY_REGISTERED,
+    )
+    status_notes = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "delivery_profiles"
+        indexes = [
+            models.Index(fields=["approval_status", "created_at"]),
+            models.Index(fields=["vehicle_type"]),
+            models.Index(fields=["vehicle_plate"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.vehicle_plate}"
+
+
 class AuditEvent(models.Model):
     event = models.CharField(max_length=120)
     details = models.JSONField(default=dict, blank=True)

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from modules.gestion_cocinero.models import ChefProfile
-from modules.gestion_usuarios_acceso_suscripcion.models import AuditEvent, UserProfile
+from modules.gestion_usuarios_acceso_suscripcion.models import AuditEvent, DeliveryProfile, UserProfile
 
 
 class ProfileRepository:
@@ -80,6 +80,26 @@ class ProfileRepository:
         ChefProfile.objects.update_or_create(user=user, defaults=defaults)
         return self.get_chef_profile(user_id)
 
+    def save_delivery_profile(self, user_id: str, payload: dict):
+        user = self._find_user(user_id)
+        if not user:
+            return None
+        defaults = {
+            "vehicle_type": payload.get("vehicle_type", DeliveryProfile.VehicleType.MOTORCYCLE),
+            "vehicle_brand": payload.get("vehicle_brand", "").strip(),
+            "vehicle_model": payload.get("vehicle_model", "").strip(),
+            "vehicle_plate": payload.get("vehicle_plate", "").strip().upper(),
+            "vehicle_front_image_url": payload.get("vehicle_front_image_url", "").strip(),
+            "vehicle_rear_image_url": payload.get("vehicle_rear_image_url", "").strip(),
+            "approval_status": payload.get(
+                "approval_status",
+                DeliveryProfile.ApprovalStatus.RECENTLY_REGISTERED,
+            ),
+            "status_notes": payload.get("status_notes", "").strip(),
+        }
+        DeliveryProfile.objects.update_or_create(user=user, defaults=defaults)
+        return self.get_delivery_profile(user_id)
+
     def get_chef_profile(self, user_id: str):
         user = self._find_user(user_id)
         if not user:
@@ -101,6 +121,27 @@ class ProfileRepository:
             "schedule": profile.schedule,
             "profile_image_url": profile.profile_image_url,
             "status": profile.status,
+            "updated_at": profile.updated_at,
+        }
+
+    def get_delivery_profile(self, user_id: str):
+        user = self._find_user(user_id)
+        if not user:
+            return None
+        profile = DeliveryProfile.objects.filter(user=user).first()
+        if not profile:
+            return None
+        return {
+            "user_id": str(user.supabase_user_id),
+            "delivery_id": str(user.supabase_user_id),
+            "vehicle_type": profile.vehicle_type,
+            "vehicle_brand": profile.vehicle_brand,
+            "vehicle_model": profile.vehicle_model,
+            "vehicle_plate": profile.vehicle_plate,
+            "vehicle_front_image_url": profile.vehicle_front_image_url,
+            "vehicle_rear_image_url": profile.vehicle_rear_image_url,
+            "approval_status": profile.approval_status,
+            "status_notes": profile.status_notes,
             "updated_at": profile.updated_at,
         }
 

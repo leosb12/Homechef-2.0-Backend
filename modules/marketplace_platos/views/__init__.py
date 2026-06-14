@@ -9,6 +9,7 @@ from ..services.reputation_service import ReputationService
 from ..serializers.public_dashboard_serializer import PublicDashboardResponseSerializer
 from ..services.client_explore_service import ClientExploreService
 from ..services.public_dashboard_service import PublicDashboardService
+from modules.pedidos_checkout_pagos.services import CartService, CartServiceError
 
 @api_view(['GET'])
 def module_home(request):
@@ -109,14 +110,18 @@ def add_dish_to_cart(request, dish_id: str):
         quantity = int(request.data.get("quantity", 1))
     except (TypeError, ValueError):
         quantity = 0
-    result = DishDetailService().add_to_cart(request.user.id, dish_id, quantity)
-    if result.get("ok"):
-        return Response(result, status=status.HTTP_200_OK)
-    if result.get("code") == "invalid_quantity":
-        return Response({"detail": "Cantidad no valida.", "available_portions": result.get("available_portions", 0)}, status=status.HTTP_400_BAD_REQUEST)
-    if result.get("code") == "chef_unavailable":
-        return Response({"detail": "Cocinero no disponible temporalmente."}, status=status.HTTP_409_CONFLICT)
-    return Response({"detail": "Plato no disponible."}, status=status.HTTP_409_CONFLICT)
+    fulfillment_type = str(request.data.get("fulfillment_type", "")).strip().lower()
+    try:
+        result = CartService().add_item(request.user.id, dish_id, quantity, fulfillment_type)
+        return Response(result, status=status.HTTP_201_CREATED)
+    except CartServiceError as exc:
+        body = {"detail": exc.message, "code": exc.code}
+        body.update(exc.details or {})
+        if exc.code in {"invalid_quantity", "insufficient_portions"}:
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
+        if exc.code == "dish_not_found":
+            return Response(body, status=status.HTTP_404_NOT_FOUND)
+        return Response(body, status=status.HTTP_409_CONFLICT)
 
 
 @api_view(["GET", "POST"])

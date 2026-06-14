@@ -65,6 +65,9 @@ class StorageUploadService:
 
     def upload_for_user(self, user, file_obj, file_type: str = "general") -> UploadedFile:
         owner = UserProfile.objects.get(supabase_user_id=user.id)
+        return self.upload_for_owner(owner, file_obj, file_type=file_type)
+
+    def upload_for_owner(self, owner: UserProfile, file_obj, file_type: str = "general") -> UploadedFile:
         original_name = Path(file_obj.name or "upload.bin").name
         safe_name = _safe_filename(original_name)
         clean_type = _safe_path_part(file_type or "general")

@@ -1,7 +1,7 @@
 import re
 from rest_framework import serializers
 
-ROLE_CHOICES = ("CLIENTE", "COCINERO")
+ROLE_CHOICES = ("CLIENTE", "COCINERO", "REPARTIDOR")
 
 
 def validate_password_rules(password: str):
@@ -29,6 +29,15 @@ class RegisterSerializer(serializers.Serializer):
     chef_latitude = serializers.FloatField(required=False)
     chef_longitude = serializers.FloatField(required=False)
     chef_schedule = serializers.CharField(required=False, allow_blank=True)
+    delivery_vehicle_type = serializers.ChoiceField(
+        choices=("motocicleta", "vehiculo"),
+        required=False,
+    )
+    delivery_vehicle_brand = serializers.CharField(required=False, allow_blank=True)
+    delivery_vehicle_model = serializers.CharField(required=False, allow_blank=True)
+    delivery_vehicle_plate = serializers.CharField(required=False, allow_blank=True)
+    delivery_vehicle_front_photo = serializers.FileField(required=False)
+    delivery_vehicle_rear_photo = serializers.FileField(required=False)
 
     def validate(self, attrs):
         if not attrs["accept_terms"]:
@@ -60,6 +69,27 @@ class RegisterSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"chef_latitude": "Latitud invalida."})
             if lng is not None and (lng < -180 or lng > 180):
                 raise serializers.ValidationError({"chef_longitude": "Longitud invalida."})
+        if attrs["role"] == "REPARTIDOR":
+            missing = []
+            for key in (
+                "delivery_vehicle_type",
+                "delivery_vehicle_brand",
+                "delivery_vehicle_model",
+                "delivery_vehicle_plate",
+                "delivery_vehicle_front_photo",
+                "delivery_vehicle_rear_photo",
+            ):
+                if not attrs.get(key):
+                    missing.append(key)
+            if missing:
+                raise serializers.ValidationError(
+                    {
+                        "delivery_profile": (
+                            "Faltan datos iniciales de repartidor: "
+                            f"{', '.join(missing)}"
+                        )
+                    }
+                )
         return attrs
 
 
