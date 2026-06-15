@@ -443,6 +443,34 @@ class NotificationService:
             )
         self._notify_many(recipients)
 
+    def notify_low_stock(self, chef_user: UserProfile, item):
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.INVENTORY,
+                    event_code="LOW_STOCK",
+                    title="Stock bajo de insumo",
+                    message=f"El insumo '{item.name}' tiene un nivel de stock ({item.current_stock} {item.unit_of_measure}) igual o menor al minimo ({item.low_stock_threshold}).",
+                    metadata={"item_id": str(item.id)},
+                )
+            ]
+        )
+
+    def notify_expiration(self, chef_user: UserProfile, item, days_left: int):
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.INVENTORY,
+                    event_code="EXPIRATION_WARNING",
+                    title="Insumo por caducar",
+                    message=f"El insumo '{item.name}' caducara en {days_left} dia(s).",
+                    metadata={"item_id": str(item.id)},
+                )
+            ]
+        )
+
     def _notify_many(self, notifications: Iterable[dict | None]):
         payloads = [row for row in notifications if row and row.get("recipient")]
         for payload in payloads:
@@ -510,6 +538,9 @@ class NotificationService:
             return "", f"/delivery/detail?id={assignment.id}"
         if role == UserProfile.ROLE_DELIVERY and order:
             return "", "/delivery/assigned"
+        # Para cocineros, si no hay pedido/asignacion asumimos que es una notificacion de inventario u otra generica
+        if role == UserProfile.ROLE_CHEF and not order and not assignment:
+            return "/chef/inventory", "/chef/inventory"
         return "", ""
 
     def _send_push_if_possible(self, notification: OperationalNotification):
