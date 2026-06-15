@@ -3,11 +3,13 @@ from django.utils import timezone
 from modules.confianza_administracion_seguridad.services import NotificationService
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryStatusHistory
 from modules.pedidos_checkout_pagos.models import Order
+from .delivery_assignment_engine import DeliveryAssignmentEngine
 
 
 class BaseDeliveryService:
     def __init__(self):
         self.notification_service = NotificationService()
+        self.assignment_engine = DeliveryAssignmentEngine()
 
     def ensure_assignment_for_order(self, order: Order):
         if order.fulfillment_type != Order.FulfillmentType.DELIVERY:
@@ -73,6 +75,13 @@ class BaseDeliveryService:
 
         assignment.metadata = metadata
         assignment.save(update_fields=update_fields)
+        if order.status == Order.Status.READY_FOR_DELIVERY:
+            assignment = self.assignment_engine.ensure_assignment_up_to_date(
+                assignment,
+                reason="order_ready_sync",
+                actor_role=actor_role,
+                actor_id=str(actor_id or ""),
+            )
         return assignment
 
     def assign_delivery_user(self, order: Order, delivery_user, actor_role: str, actor_id: str, notes: str = ""):

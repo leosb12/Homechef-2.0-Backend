@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderPayment, OrderPaymentEvent, OrderStatusHistory, OrderTimelineEvent, SimulatedQRPaymentSession
+from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
 
 
@@ -25,6 +26,7 @@ class QRPaymentService:
     def __init__(self):
         self.stock_service = DishStockService()
         self.notification_service = NotificationService()
+        self.receipt_service = OrderReceiptService()
 
     @transaction.atomic
     def create_session(self, order: Order, payment: OrderPayment, actor_id: str):
@@ -162,6 +164,13 @@ class QRPaymentService:
             payment=payment,
             event_code="QR_PAYMENT_CONFIRMED",
             event_label="Pago QR simulado confirmado",
+            actor_role="CLIENTE",
+            actor_id=str(client.supabase_user_id),
+            metadata={"session_code": session.session_code},
+        )
+        self.receipt_service.ensure_receipt(
+            order,
+            payment,
             actor_role="CLIENTE",
             actor_id=str(client.supabase_user_id),
             metadata={"session_code": session.session_code},

@@ -1,3 +1,4 @@
+from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -10,6 +11,7 @@ from django.utils import timezone
 from modules.confianza_administracion_seguridad.services import NotificationService
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderPayment, OrderPaymentEvent, OrderStatusHistory, OrderTimelineEvent
+from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
 
 
@@ -25,10 +27,12 @@ class OrderCoinGateService:
     COINGATE_APPROVED = {"paid", "confirmed"}
     COINGATE_PENDING = {"new", "pending", "confirming"}
     COINGATE_REJECTED = {"invalid", "expired", "canceled", "refunded"}
+    BOB_PER_USD = Decimal("6.91")
 
     def __init__(self):
         self.stock_service = DishStockService()
         self.notification_service = NotificationService()
+        self.receipt_service = OrderReceiptService()
 
     def create_payment(self, *, order: Order, payment: OrderPayment, success_redirect_to: str = "", cancel_redirect_to: str = ""):
         if not settings.COINGATE_API_BASE_URL or not settings.COINGATE_API_TOKEN:
@@ -38,11 +42,12 @@ class OrderCoinGateService:
         cancel_url = str(cancel_redirect_to or settings.ORDER_COINGATE_CANCEL_URL).strip()
         callback_url = settings.ORDER_COINGATE_CALLBACK_URL
         homechef_order_id = f"homechef-order-{payment.id}-{uuid4().hex}"
+        provider_amount, provider_currency = self._provider_pricing(payment)
         body = {
             "order_id": homechef_order_id,
-            "price_amount": str(payment.amount),
-            "price_currency": payment.currency,
-            "receive_currency": "BTC",
+            "price_amount": str(provider_amount),
+            "price_currency": provider_currency,
+            "receive_currency": settings.COINGATE_RECEIVE_CURRENCY,
             "callback_url": callback_url,
             "success_url": with_query_param(success_url, "coingate_order_id", homechef_order_id),
             "cancel_url": with_query_param(cancel_url, "coingate_order_id", homechef_order_id),
@@ -81,6 +86,8 @@ class OrderCoinGateService:
         response_data["homechef_order_id"] = homechef_order_id
         response_data["success_url"] = body["success_url"]
         response_data["cancel_url"] = body["cancel_url"]
+        response_data["provider_price_amount"] = str(provider_amount)
+        response_data["provider_price_currency"] = provider_currency
         payment.provider = "COINGATE_SANDBOX"
         payment.status = OrderPayment.Status.PENDING
         payment.payment_url = payment_url
@@ -105,6 +112,14 @@ class OrderCoinGateService:
             metadata={"payment_id": payment.id, "external_reference": external_reference, "homechef_order_id": homechef_order_id},
         )
         return payment
+
+    def _provider_pricing(self, payment: OrderPayment):
+        currency = str(payment.currency or "").upper()
+        amount = Decimal(str(payment.amount or 0))
+        if currency == "BOB":
+            converted = (amount / self.BOB_PER_USD).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            return converted, "USD"
+        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), currency or "USD"
 
     @transaction.atomic
     def confirm_checkout_return(self, user_id: str, *, provider: str = "", coingate_order_id: str = ""):
@@ -191,6 +206,7 @@ class OrderCoinGateService:
             actor_id="",
             metadata={"provider_response": provider_response},
         )
+        self.receipt_service.ensure_receipt(order, payment, metadata={"provider_response": provider_response})
         self.notification_service.notify_payment_confirmed(order, payment)
 
     def _mark_pending(self, payment: OrderPayment, provider_response: dict):

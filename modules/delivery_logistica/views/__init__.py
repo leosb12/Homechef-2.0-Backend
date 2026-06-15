@@ -64,6 +64,16 @@ def delivery_accept_view(request, assignment_id: str):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_reject_view(request, assignment_id: str):
+    try:
+        payload = DeliveryOperationsService().reject_assignment(request.user.id, assignment_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryLogisticsError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
 def delivery_arrived_chef_view(request, assignment_id: str):
     try:
         payload = DeliveryOperationsService().arrived_chef(request.user.id, assignment_id)
@@ -188,6 +198,7 @@ def _error_status(code: str):
         "assignment_already_taken",
         "transition_not_allowed",
         "delivery_not_owner",
+        "assignment_reassigned",
         "order_not_ready_for_delivery",
         "assignment_tracking_closed",
         "incident_transition_not_allowed",

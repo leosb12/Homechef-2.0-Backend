@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    delivery_active_order_detail_view,
+    delivery_active_orders_collection_view,
     delivery_driver_status_update_view,
     delivery_drivers_collection_view,
     module_home,
@@ -13,6 +15,8 @@ from .views import (
 
 urlpatterns = [
     path("", module_home),
+    path("delivery-orders/active/", delivery_active_orders_collection_view),
+    path("delivery-orders/active/<str:order_id>/", delivery_active_order_detail_view),
     path("delivery-drivers/", delivery_drivers_collection_view),
     path("delivery-drivers/<str:user_id>/status/", delivery_driver_status_update_view),
     path("notifications/", notifications_collection_view),

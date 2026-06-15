@@ -52,6 +52,13 @@ class DeliveryTrackingService:
             recorded_at=payload.get("recorded_at") or timezone.now(),
         )
         map_payload = self.refresh_current_route(assignment)
+        if assignment.delivery_user_id:
+            from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
+
+            publish_assignment_snapshot_for_delivery(
+                assignment.id,
+                str(assignment.delivery_user.supabase_user_id),
+            )
         return {
             "assignment_id": assignment.id,
             "location_ping": self._serialize_ping(ping),
@@ -83,6 +90,13 @@ class DeliveryTrackingService:
         delivery = self._require_delivery(user_id)
         assignment = self._get_owned_assignment(delivery, assignment_id, lock=True)
         map_payload = self.refresh_current_route(assignment)
+        if assignment.delivery_user_id:
+            from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
+
+            publish_assignment_snapshot_for_delivery(
+                assignment.id,
+                str(assignment.delivery_user.supabase_user_id),
+            )
         return {
             "assignment_id": assignment.id,
             "route": map_payload.get("route"),
@@ -124,7 +138,27 @@ class DeliveryTrackingService:
                 distance_meters=float(route_result["distance_meters"]),
                 duration_seconds=int(route_result["duration_seconds"]),
                 polyline=route_result["polyline"],
-                metadata=route_result.get("metadata") or {},
+                metadata={
+                    **(route_result.get("metadata") or {}),
+                    "origin_kind": start.get("kind", ""),
+                    "origin_label": start.get("label", ""),
+                    "destination_kind": end.get("kind", ""),
+                    "destination_label": end.get("label", ""),
+                    "origin_used": {
+                        "kind": start.get("kind", ""),
+                        "lat": float(start["lat"]) if start["lat"] is not None else None,
+                        "lng": float(start["lng"]) if start["lng"] is not None else None,
+                        "label": start.get("label", ""),
+                        "address": start.get("address", ""),
+                    },
+                    "destination_used": {
+                        "kind": end.get("kind", ""),
+                        "lat": float(end["lat"]) if end["lat"] is not None else None,
+                        "lng": float(end["lng"]) if end["lng"] is not None else None,
+                        "label": end.get("label", ""),
+                        "address": end.get("address", ""),
+                    },
+                },
             )
         return self._serialize_map(
             assignment,
@@ -143,6 +177,8 @@ class DeliveryTrackingService:
         origin = self._route_origin_point(assignment, latest_ping)
         destination = self._route_destination_point(assignment, route)
         current_location = self._serialize_ping(latest_ping)
+        grouped_route = self._build_grouped_route(assignment, latest_ping=latest_ping)
+        quality = self._route_quality_payload(route, origin, destination)
         return {
             "enabled": bool(route or latest_ping or chef_point["lat"] is not None or client_point["lat"] is not None),
             "provider": route.provider if route else "",
@@ -166,6 +202,8 @@ class DeliveryTrackingService:
             },
             "route": self._serialize_route(route),
             "navigation": self._serialize_navigation(route, origin, destination),
+            "grouped_route": grouped_route,
+            "quality": quality,
             "last_ping_at": current_location["recorded_at"] if current_location else None,
         }
 
@@ -188,6 +226,7 @@ class DeliveryTrackingService:
                 "lat": route.end_latitude,
                 "lng": route.end_longitude,
             },
+            "quality": self._route_quality_payload(route, None, None),
         }
 
     def _serialize_ping(self, ping: DeliveryLocationPing | None):
@@ -205,12 +244,18 @@ class DeliveryTrackingService:
 
     def _route_start_point(self, assignment: DeliveryAssignment, latest_ping: DeliveryLocationPing | None):
         if latest_ping:
-            return {"lat": latest_ping.latitude, "lng": latest_ping.longitude, "address": ""}
+            return {
+                "kind": "CURRENT_LOCATION",
+                "lat": latest_ping.latitude,
+                "lng": latest_ping.longitude,
+                "address": "",
+                "label": "Tu ubicacion actual",
+            }
         delivery_known_point = self._delivery_known_point(assignment)
         if delivery_known_point["lat"] is not None and delivery_known_point["lng"] is not None:
             return delivery_known_point
         if assignment.status in self.PRE_PICKUP_STATUSES:
-            return {"lat": None, "lng": None, "address": ""}
+            return {"lat": None, "lng": None, "address": "", "kind": "UNAVAILABLE", "label": ""}
         return self._chef_point(assignment)
 
     def _route_end_point(self, assignment: DeliveryAssignment, route_kind: str):
@@ -298,9 +343,171 @@ class DeliveryTrackingService:
                 "distance_human": self._distance_human(route.distance_meters),
                 "duration_human": self._duration_human(route.duration_seconds),
                 "updated_at": route.updated_at.isoformat(),
+                "provider": route.provider,
+                "uses_fallback": bool((route.metadata or {}).get("uses_fallback")),
+                "fallback_reason": str((route.metadata or {}).get("fallback_reason") or ""),
             },
             "next_step": next_step,
             "steps": steps[:8],
+        }
+
+    def _route_quality_payload(self, route: DeliveryRouteSnapshot | None, origin: dict | None, destination: dict | None):
+        metadata = route.metadata if route else {}
+        return {
+            "provider": route.provider if route else "",
+            "uses_fallback": bool((metadata or {}).get("uses_fallback")),
+            "fallback_reason": str((metadata or {}).get("fallback_reason") or ""),
+            "origin_used": (
+                (metadata or {}).get("origin_used")
+                or self._waypoint_payload(origin)
+            ),
+            "destination_used": (
+                (metadata or {}).get("destination_used")
+                or self._waypoint_payload(destination)
+            ),
+        }
+
+    def _build_grouped_route(self, assignment: DeliveryAssignment, latest_ping: DeliveryLocationPing | None = None):
+        if not assignment.delivery_user_id:
+            return None
+        active_assignments = list(
+            DeliveryAssignment.objects.filter(
+                delivery_user=assignment.delivery_user,
+                status__in=[
+                    DeliveryAssignment.Status.ASSIGNED,
+                    DeliveryAssignment.Status.AT_CHEF,
+                    DeliveryAssignment.Status.PICKED_UP,
+                    DeliveryAssignment.Status.EN_ROUTE_TO_CLIENT,
+                ],
+            )
+            .select_related("order", "order__client", "order__chef")
+            .prefetch_related("order__address")
+            .order_by("assigned_at", "created_at")
+        )
+        if not active_assignments:
+            return None
+        start_point = self._route_start_point(assignment, latest_ping)
+        if start_point["lat"] is None or start_point["lng"] is None:
+            start_point = self._delivery_known_point(assignment)
+        current_lat = start_point["lat"]
+        current_lng = start_point["lng"]
+        pickup_stops = []
+        delivery_stops = []
+        for item in active_assignments:
+            if item.status in {
+                DeliveryAssignment.Status.ASSIGNED,
+                DeliveryAssignment.Status.AT_CHEF,
+            }:
+                stop = self._chef_stop_payload(item)
+                if self._is_valid_waypoint(stop):
+                    pickup_stops.append(stop)
+            if item.status in {
+                DeliveryAssignment.Status.PICKED_UP,
+                DeliveryAssignment.Status.EN_ROUTE_TO_CLIENT,
+            }:
+                stop = self._client_stop_payload(item)
+                if self._is_valid_waypoint(stop):
+                    delivery_stops.append(stop)
+        ordered_pickups = self._order_stops_by_distance(pickup_stops, current_lat, current_lng)
+        if ordered_pickups:
+            current_lat = ordered_pickups[-1]["lat"]
+            current_lng = ordered_pickups[-1]["lng"]
+        ordered_deliveries = self._order_stops_by_distance(delivery_stops, current_lat, current_lng)
+        ordered_stops = [*ordered_pickups, *ordered_deliveries]
+        total_distance = 0.0
+        total_seconds = 0
+        segment_origin = start_point
+        polyline = []
+        for stop in ordered_stops:
+            if not self._is_valid_waypoint(segment_origin) or not self._is_valid_waypoint(stop):
+                segment_origin = stop
+                continue
+            segment = self.routing_service.build_walking_route(segment_origin, stop)
+            total_distance += float(segment["distance_meters"] or 0)
+            total_seconds += int(segment["duration_seconds"] or 0)
+            segment_points = segment.get("polyline") or []
+            if polyline and segment_points:
+                polyline.extend(segment_points[1:])
+            else:
+                polyline.extend(segment_points)
+            segment_origin = stop
+        return {
+            "delivery_user_id": str(assignment.delivery_user.supabase_user_id),
+            "delivery_user_name": self._profile_name(assignment.delivery_user),
+            "active_assignment_count": len(active_assignments),
+            "distance_meters": total_distance,
+            "duration_seconds": total_seconds,
+            "distance_human": self._distance_human(total_distance),
+            "duration_human": self._duration_human(total_seconds),
+            "polyline": polyline,
+            "stops": ordered_stops,
+            "next_stop": ordered_stops[0] if ordered_stops else None,
+        }
+
+    def _order_stops_by_distance(self, stops: list[dict], current_lat, current_lng):
+        if current_lat is None or current_lng is None:
+            return sorted(stops, key=lambda item: (item.get("priority", 99), item.get("eta_seed_seconds", 0)))
+        pending = list(stops)
+        ordered = []
+        origin_lat = float(current_lat)
+        origin_lng = float(current_lng)
+        while pending:
+            pending.sort(
+                key=lambda item: (
+                    int(item.get("priority", 99)),
+                    self.routing_service._haversine_distance_meters(origin_lat, origin_lng, item["lat"], item["lng"]),
+                )
+            )
+            next_stop = pending.pop(0)
+            ordered.append(next_stop)
+            origin_lat = float(next_stop["lat"])
+            origin_lng = float(next_stop["lng"])
+        return ordered
+
+    def _chef_stop_payload(self, assignment: DeliveryAssignment):
+        point = self._chef_point(assignment)
+        return {
+            "kind": "CHEF_PICKUP",
+            "assignment_id": assignment.id,
+            "order_id": assignment.order_id,
+            "status": assignment.status,
+            "status_label": "Recoger del cocinero",
+            "lat": point["lat"],
+            "lng": point["lng"],
+            "label": self._profile_name(assignment.order.chef),
+            "address": point["address"],
+            "priority": 1,
+            "eta_seed_seconds": 0,
+        }
+
+    def _client_stop_payload(self, assignment: DeliveryAssignment):
+        point = self._client_point(assignment)
+        return {
+            "kind": "CLIENT_DELIVERY",
+            "assignment_id": assignment.id,
+            "order_id": assignment.order_id,
+            "status": assignment.status,
+            "status_label": "Entregar al cliente",
+            "lat": point["lat"],
+            "lng": point["lng"],
+            "label": self._profile_name(assignment.order.client),
+            "address": point["address"],
+            "priority": 2,
+            "eta_seed_seconds": 0,
+        }
+
+    def _is_valid_waypoint(self, point: dict | None):
+        return bool(point and point.get("lat") is not None and point.get("lng") is not None)
+
+    def _waypoint_payload(self, point: dict | None):
+        if not point:
+            return None
+        return {
+            "kind": point.get("kind", ""),
+            "lat": float(point["lat"]) if point.get("lat") is not None else None,
+            "lng": float(point["lng"]) if point.get("lng") is not None else None,
+            "label": point.get("label", ""),
+            "address": point.get("address", ""),
         }
 
     def _delivery_known_point(self, assignment: DeliveryAssignment):
@@ -349,17 +556,21 @@ class DeliveryTrackingService:
     def _chef_point(self, assignment: DeliveryAssignment):
         profile = ChefProfile.objects.filter(user=assignment.order.chef).first()
         return {
+            "kind": "CHEF",
             "lat": profile.location_latitude if profile else None,
             "lng": profile.location_longitude if profile else None,
             "address": profile.location_address if profile else "",
+            "label": self._profile_name(assignment.order.chef),
         }
 
     def _client_point(self, assignment: DeliveryAssignment):
         address = getattr(assignment.order, "address", None)
         return {
+            "kind": "CLIENT",
             "lat": address.latitude if address else None,
             "lng": address.longitude if address else None,
             "address": address.line_1 if address else "",
+            "label": self._profile_name(assignment.order.client),
         }
 
     def _latest_ping(self, assignment: DeliveryAssignment):
@@ -380,6 +591,12 @@ class DeliveryTrackingService:
             .first()
         )
         if not assignment:
+            foreign_assignment = DeliveryAssignment.objects.select_related("delivery_user").filter(id=str(assignment_id)).first()
+            if foreign_assignment and foreign_assignment.delivery_user_id and foreign_assignment.delivery_user_id != delivery.id:
+                raise DeliveryTrackingError(
+                    "La entrega ya no pertenece a tu usuario. Fue reasignada a otro repartidor.",
+                    "assignment_reassigned",
+                )
             raise DeliveryTrackingError("Entrega no encontrada para el repartidor.", "assignment_not_found")
         return assignment
 
@@ -393,6 +610,12 @@ class DeliveryTrackingService:
             .first()
         )
         if not assignment:
+            foreign_assignment = DeliveryAssignment.objects.select_related("delivery_user").filter(id=str(assignment_id)).first()
+            if foreign_assignment and foreign_assignment.delivery_user_id and foreign_assignment.delivery_user_id != delivery.id:
+                raise DeliveryTrackingError(
+                    "La entrega ya no pertenece a tu usuario. Fue reasignada a otro repartidor.",
+                    "assignment_reassigned",
+                )
             raise DeliveryTrackingError("Entrega no encontrada para el repartidor.", "assignment_not_found")
         return assignment
 

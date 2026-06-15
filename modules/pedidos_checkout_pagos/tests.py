@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -6,15 +7,18 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from modules.confianza_administracion_seguridad.models import OperationalNotification
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident, DeliveryRouteSnapshot, DeliveryStatusHistory
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, DailyMenuItem, Dish
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import (
     Cart,
+    CartItem,
     Order,
     OrderItem,
     OrderPayment,
     OrderPaymentEvent,
+    OrderReceipt,
     OrderStatusHistory,
     PickupConfirmation,
     SimulatedQRPaymentSession,
@@ -328,6 +332,78 @@ class CartServiceAndApiTests(TestCase):
         self.assertEqual(response.data["code"], "insufficient_portions")
         self.assertEqual(response.data["available_portions"], 6)
 
+    def test_repeat_order_adds_all_items_to_active_cart(self):
+        order = self._create_historical_order(items=[(self.dish, 2)])
+
+        response = self.api.post(f"/api/v1/orders/my-orders/{order.id}/repeat/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["added_items"], 1)
+        self.assertEqual(response.data["summary"]["skipped_items"], 0)
+        self.assertEqual(response.data["cart"]["items_count"], 2)
+        self.assertEqual(response.data["added_items"][0]["cart_quantity"], 2)
+        self.assertTrue(
+            order.timeline_events.filter(event_code="ORDER_REPEATED_TO_CART").exists()
+        )
+
+    def test_repeat_order_merges_cart_and_skips_unavailable_items(self):
+        unavailable_dish = Dish.objects.create(
+            chef=self.chef_profile,
+            name="Sajta",
+            description="Temporal",
+            price=Decimal("19.00"),
+            portions=4,
+            ingredients=["pollo"],
+            tags=["TEMPORAL"],
+            allergens=[],
+            status=Dish.STATUS_DRAFT,
+        )
+        self.service.add_item(str(self.client_profile.supabase_user_id), self.dish.id, 1)
+        order = self._create_historical_order(items=[(self.dish, 2), (unavailable_dish, 1)])
+
+        response = self.api.post(f"/api/v1/orders/my-orders/{order.id}/repeat/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["added_items"], 1)
+        self.assertEqual(response.data["summary"]["skipped_items"], 1)
+        self.assertEqual(response.data["added_items"][0]["cart_quantity"], 3)
+        self.assertEqual(response.data["skipped_items"][0]["code"], "dish_unpublished")
+        cart_item = CartItem.objects.get(
+            cart__client=self.client_profile,
+            cart__chef=self.chef_profile,
+            dish=self.dish,
+        )
+        self.assertEqual(cart_item.quantity, 3)
+
+    def test_repeat_order_returns_summary_when_everything_is_invalid(self):
+        self.dish.status = Dish.STATUS_DRAFT
+        self.dish.save(update_fields=["status", "updated_at"])
+        order = self._create_historical_order(items=[(self.dish, 1)])
+
+        response = self.api.post(f"/api/v1/orders/my-orders/{order.id}/repeat/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["added_items"], 0)
+        self.assertEqual(response.data["summary"]["skipped_items"], 1)
+        self.assertIsNone(response.data["cart"])
+        self.assertIn("ninguno", response.data["message"].lower())
+
+    def test_repeat_order_rejects_unrelated_client(self):
+        order = self._create_historical_order(items=[(self.dish, 1)])
+        other_client = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="repeat.other@test.com",
+            role=UserProfile.ROLE_CLIENT,
+            first_name="Other",
+            is_active=True,
+        )
+        self.api.force_authenticate(user=AuthenticatedProfile(other_client))
+
+        response = self.api.post(f"/api/v1/orders/my-orders/{order.id}/repeat/", {}, format="json")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["code"], "order_not_found")
+
     def test_checkout_preview_requires_address_for_delivery(self):
         add_response = self.api.post(
             "/api/v1/orders/cart/items/",
@@ -373,6 +449,63 @@ class CartServiceAndApiTests(TestCase):
         self.assertIn("stripe_test", response.data["payment_options"])
         self.assertIn("qr_simulado", response.data["payment_options"])
         self.assertIn("bitcoin_coingate", response.data["payment_options"])
+        self.assertTrue(response.data["pickup_policy"]["available_slots"])
+
+    def test_checkout_preview_rejects_invalid_pickup_slot(self):
+        add_response = self.api.post(
+            "/api/v1/orders/cart/items/",
+            {"dish_id": self.dish.id, "quantity": 1},
+            format="json",
+        )
+        cart_id = add_response.data["cart"]["id"]
+        response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+                "pickup_slot": "2099-01-01T10:00:00-04:00",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "pickup_slot_invalid")
+
+    def test_checkout_confirm_pickup_persists_selected_slot(self):
+        add_response = self.api.post(
+            "/api/v1/orders/cart/items/",
+            {"dish_id": self.dish.id, "quantity": 1},
+            format="json",
+        )
+        cart_id = add_response.data["cart"]["id"]
+        preview_response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        pickup_slot = preview_response.data["pickup_policy"]["available_slots"][0]["id"]
+        confirm_response = self.api.post(
+            "/api/v1/orders/checkout/confirm/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+                "pickup_slot": pickup_slot,
+                "expected_total": preview_response.data["pricing"]["total"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(confirm_response.status_code, 201)
+        pickup = PickupConfirmation.objects.get(order_id=confirm_response.data["order_id"])
+        self.assertIsNotNone(pickup.selected_slot_start)
+        self.assertIsNotNone(pickup.selected_slot_end)
+        self.assertIn("Tolerancia adicional", pickup.pickup_schedule_note)
 
     @override_settings(
         STRIPE_SECRET_KEY="sk_test_demo",
@@ -695,7 +828,10 @@ class CartServiceAndApiTests(TestCase):
         self.assertEqual(ready_response.status_code, 200)
         ready_detail_response = self.api.get(f"/api/v1/orders/chef/orders/{order_id}/")
         self.assertEqual(ready_detail_response.status_code, 200)
-        self.assertEqual(ready_detail_response.data["order"]["available_actions"], ["confirm_pickup"])
+        self.assertEqual(
+            ready_detail_response.data["order"]["available_actions"],
+            ["confirm_pickup", "mark_pickup_no_show"],
+        )
         self.assertEqual(ready_detail_response.data["order"]["pickup"]["pickup_code"], pickup.pickup_code)
         cash_response = self.api.post(
             f"/api/v1/orders/chef/orders/{order_id}/pickup/confirm/",
@@ -1730,9 +1866,11 @@ class CartServiceAndApiTests(TestCase):
         self.assertEqual(payment.provider, "COINGATE_SANDBOX")
         self.assertEqual(payment.external_reference, "cg-order-001")
         self.assertIn("coingate_order_id=homechef-order-", payment.provider_payload.get("success_url", ""))
+        self.assertEqual(payment.provider_payload.get("provider_price_currency"), "USD")
         self.assertEqual(confirm_response.data["payment"]["payment_url"], payment.payment_url)
         self.assertTrue(order.stock_reserved)
         post_mock.assert_called_once()
+        self.assertEqual(post_mock.call_args.kwargs["json"]["price_currency"], "USD")
 
     @override_settings(
         COINGATE_API_BASE_URL="https://api-sandbox.coingate.com/v2",
@@ -1888,6 +2026,234 @@ class CartServiceAndApiTests(TestCase):
         self.assertEqual(payment.status, OrderPayment.Status.EXPIRED)
         self.assertEqual(self.dish.portions, 6)
 
+    def test_pickup_ready_state_starts_window_and_grace_period(self):
+        add_response = self.api.post(
+            "/api/v1/orders/cart/items/",
+            {"dish_id": self.dish.id, "quantity": 1},
+            format="json",
+        )
+        cart_id = add_response.data["cart"]["id"]
+        preview_response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        pickup_slot = preview_response.data["pickup_policy"]["available_slots"][0]["id"]
+        confirm_response = self.api.post(
+            "/api/v1/orders/checkout/confirm/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+                "pickup_slot": pickup_slot,
+                "expected_total": preview_response.data["pricing"]["total"],
+            },
+            format="json",
+        )
+        order_id = confirm_response.data["order_id"]
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/accept/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/preparing/", {}, format="json").status_code, 200)
+        ready_response = self.api.post(f"/api/v1/orders/chef/orders/{order_id}/ready/", {}, format="json")
+
+        self.assertEqual(ready_response.status_code, 200)
+        pickup = PickupConfirmation.objects.get(order_id=order_id)
+        self.assertIsNotNone(pickup.pickup_window_start)
+        self.assertIsNotNone(pickup.pickup_window_end)
+        self.assertIsNotNone(pickup.pickup_grace_deadline)
+        self.assertIsNotNone(pickup.pickup_retention_deadline)
+        self.assertFalse(pickup.pickup_no_show_flag)
+        self.assertIn("Tolerancia hasta", pickup.pickup_schedule_note)
+
+    def test_pickup_no_show_is_marked_and_order_expires_after_retention(self):
+        add_response = self.api.post(
+            "/api/v1/orders/cart/items/",
+            {"dish_id": self.dish.id, "quantity": 1},
+            format="json",
+        )
+        cart_id = add_response.data["cart"]["id"]
+        preview_response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        pickup_slot = preview_response.data["pickup_policy"]["available_slots"][0]["id"]
+        confirm_response = self.api.post(
+            "/api/v1/orders/checkout/confirm/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+                "pickup_slot": pickup_slot,
+                "expected_total": preview_response.data["pricing"]["total"],
+            },
+            format="json",
+        )
+        order_id = confirm_response.data["order_id"]
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/accept/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/preparing/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/ready/", {}, format="json").status_code, 200)
+
+        pickup = PickupConfirmation.objects.get(order_id=order_id)
+        now = timezone.now()
+        pickup.pickup_window_start = now - timedelta(hours=2)
+        pickup.pickup_window_end = now - timedelta(hours=1, minutes=30)
+        pickup.pickup_grace_deadline = now - timedelta(hours=1)
+        pickup.pickup_retention_deadline = now + timedelta(minutes=15)
+        pickup.save(
+            update_fields=[
+                "pickup_window_start",
+                "pickup_window_end",
+                "pickup_grace_deadline",
+                "pickup_retention_deadline",
+                "updated_at",
+            ]
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.client_profile))
+        no_show_response = self.api.get(f"/api/v1/orders/my-orders/{order_id}/")
+        self.assertEqual(no_show_response.status_code, 200)
+        self.assertTrue(no_show_response.data["order"]["pickup"]["pickup_no_show_flag"])
+        self.assertEqual(no_show_response.data["order"]["pickup"]["state_label"], "No presentado")
+
+        pickup.refresh_from_db()
+        pickup.pickup_retention_deadline = now - timedelta(minutes=5)
+        pickup.save(update_fields=["pickup_retention_deadline", "updated_at"])
+
+        expired_response = self.api.get(f"/api/v1/orders/my-orders/{order_id}/tracking/")
+        self.assertEqual(expired_response.status_code, 200)
+        self.assertEqual(expired_response.data["pickup"]["state_label"], "Retencion vencida")
+        order = Order.objects.get(id=order_id)
+        self.assertEqual(order.status, Order.Status.READY_FOR_PICKUP)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        close_response = self.api.post(
+            f"/api/v1/orders/chef/orders/{order_id}/pickup/close-retention/",
+            {},
+            format="json",
+        )
+        self.assertEqual(close_response.status_code, 200)
+        order = Order.objects.get(id=order_id)
+        pickup.refresh_from_db()
+        payment = OrderPayment.objects.get(order=order)
+        self.assertEqual(order.status, Order.Status.EXPIRED)
+        self.assertEqual(pickup.status, PickupConfirmation.Status.CANCELLED)
+        self.assertEqual(payment.status, OrderPayment.Status.CANCELLED)
+
+    def test_chef_can_operate_pickup_no_show_retention_flow(self):
+        add_response = self.api.post(
+            "/api/v1/orders/cart/items/",
+            {"dish_id": self.dish.id, "quantity": 1},
+            format="json",
+        )
+        cart_id = add_response.data["cart"]["id"]
+        preview_response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+            },
+            format="json",
+        )
+        pickup_slot = preview_response.data["pickup_policy"]["available_slots"][0]["id"]
+        confirm_response = self.api.post(
+            "/api/v1/orders/checkout/confirm/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": "pickup",
+                "payment_method": "cash",
+                "pickup_slot": pickup_slot,
+                "expected_total": preview_response.data["pricing"]["total"],
+            },
+            format="json",
+        )
+        order_id = confirm_response.data["order_id"]
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/accept/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/preparing/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order_id}/ready/", {}, format="json").status_code, 200)
+
+        pickup = PickupConfirmation.objects.get(order_id=order_id)
+        now = timezone.now()
+        pickup.pickup_window_start = now - timedelta(minutes=25)
+        pickup.pickup_window_end = now - timedelta(minutes=5)
+        pickup.pickup_grace_deadline = now + timedelta(minutes=10)
+        pickup.pickup_retention_deadline = now + timedelta(minutes=40)
+        pickup.save(
+            update_fields=[
+                "pickup_window_start",
+                "pickup_window_end",
+                "pickup_grace_deadline",
+                "pickup_retention_deadline",
+                "updated_at",
+            ]
+        )
+
+        detail_response = self.api.get(f"/api/v1/orders/chef/orders/{order_id}/")
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn("mark_pickup_no_show", detail_response.data["order"]["available_actions"])
+
+        no_show_response = self.api.post(
+            f"/api/v1/orders/chef/orders/{order_id}/pickup/no-show/",
+            {},
+            format="json",
+        )
+        self.assertEqual(no_show_response.status_code, 200)
+        self.assertTrue(no_show_response.data["order"]["pickup"]["pickup_no_show_flag"])
+        self.assertIn("extend_pickup_retention", no_show_response.data["order"]["available_actions"])
+
+        pickup.refresh_from_db()
+        previous_deadline = pickup.pickup_retention_deadline
+        extend_response = self.api.post(
+            f"/api/v1/orders/chef/orders/{order_id}/pickup/extend-retention/",
+            {},
+            format="json",
+        )
+        self.assertEqual(extend_response.status_code, 200)
+        pickup.refresh_from_db()
+        self.assertEqual(pickup.retention_extension_count, 1)
+        self.assertGreater(pickup.pickup_retention_deadline, previous_deadline)
+
+        pickup.pickup_retention_deadline = timezone.now() - timedelta(minutes=1)
+        pickup.save(update_fields=["pickup_retention_deadline", "updated_at"])
+        close_response = self.api.post(
+            f"/api/v1/orders/chef/orders/{order_id}/pickup/close-retention/",
+            {},
+            format="json",
+        )
+        self.assertEqual(close_response.status_code, 200)
+        order = Order.objects.get(id=order_id)
+        payment = OrderPayment.objects.get(order=order)
+        pickup.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.EXPIRED)
+        self.assertEqual(payment.status, OrderPayment.Status.CANCELLED)
+        self.assertEqual(pickup.status, PickupConfirmation.Status.CANCELLED)
+        self.assertEqual(
+            OperationalNotification.objects.filter(order_ref=order_id, event_code="PICKUP_NO_SHOW").count(),
+            2,
+        )
+        self.assertEqual(
+            OperationalNotification.objects.filter(order_ref=order_id, event_code="PICKUP_RETENTION_EXTENDED").count(),
+            2,
+        )
+        self.assertEqual(
+            OperationalNotification.objects.filter(order_ref=order_id, event_code="PICKUP_RETENTION_CLOSED").count(),
+            2,
+        )
+
     def _open_slot(self):
         day = [
             "monday",
@@ -1905,6 +2271,205 @@ class CartServiceAndApiTests(TestCase):
             "end_time": "23:59",
             "modes": ["delivery", "pickup"],
         }
+
+
+    @override_settings(
+        STRIPE_SECRET_KEY="sk_test_demo",
+        ORDER_STRIPE_SUCCESS_URL="https://frontend.test/client/payments/stripe/return?payment=stripe_success",
+        ORDER_STRIPE_CANCEL_URL="https://frontend.test/client/payments/stripe/return?payment=stripe_cancel",
+    )
+    @patch("modules.pedidos_checkout_pagos.services.order_stripe_service.stripe.checkout.Session.retrieve")
+    @patch("modules.pedidos_checkout_pagos.services.order_stripe_service.stripe.checkout.Session.create")
+    def test_receipt_generation_and_download_for_stripe(self, session_create, session_retrieve):
+        session_create.return_value = Mock(
+            id="cs_test_receipt_001",
+            url="https://checkout.stripe.com/c/pay/cs_test_receipt_001",
+            mode="payment",
+            payment_status="unpaid",
+        )
+        session_retrieve.return_value = Mock(
+            payment_status="paid",
+            status="complete",
+            to_dict_recursive=Mock(return_value={"id": "cs_test_receipt_001", "payment_status": "paid", "status": "complete"}),
+        )
+        order = self._create_checkout_order("stripe_test", fulfillment_type="pickup")
+        payment = OrderPayment.objects.get(order=order)
+
+        response = self.api.post(
+            "/api/v1/orders/payments/stripe/confirm-return/",
+            {"provider": "STRIPE_SANDBOX", "stripe_session_id": payment.external_reference},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        receipt = OrderReceipt.objects.get(order=order, payment=payment)
+        self.assertEqual(receipt.payment_method, Order.PaymentMethod.STRIPE_TEST)
+        self._assert_client_receipt_download(order.id, receipt.id, "pdf", "application/pdf")
+        self._assert_chef_receipt_download(order.id, receipt.id, "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    def test_receipt_generation_and_download_for_cash_pickup(self):
+        order = self._create_checkout_order("cash", fulfillment_type="pickup")
+        pickup = PickupConfirmation.objects.get(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order.id}/accept/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order.id}/preparing/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api.post(f"/api/v1/orders/chef/orders/{order.id}/ready/", {}, format="json").status_code, 200)
+        confirm_response = self.api.post(
+            f"/api/v1/orders/chef/orders/{order.id}/pickup/confirm/",
+            {"pickup_code": pickup.pickup_code},
+            format="json",
+        )
+        self.assertEqual(confirm_response.status_code, 200)
+
+        payment = OrderPayment.objects.get(order=order)
+        receipt = OrderReceipt.objects.get(order=order, payment=payment)
+        self.assertEqual(receipt.payment_method, Order.PaymentMethod.CASH)
+        self._assert_client_receipt_download(order.id, receipt.id, "html", "text/html; charset=utf-8")
+        self._assert_chef_receipt_download(order.id, receipt.id, "pdf", "application/pdf")
+
+    def test_receipt_generation_and_download_for_qr_simulado(self):
+        order = self._create_checkout_order("qr_simulado", fulfillment_type="pickup")
+        payment = OrderPayment.objects.get(order=order)
+        session = SimulatedQRPaymentSession.objects.get(payment=payment)
+
+        self.assertEqual(self.api.post(f"/api/v1/orders/payments/qr-sessions/{session.session_code}/start/", {}, format="json").status_code, 200)
+        with patch("modules.pedidos_checkout_pagos.services.qr_payment_service.sleep", return_value=None):
+            confirm_response = self.api.post(f"/api/v1/orders/payments/qr-sessions/{session.session_code}/confirm/", {}, format="json")
+        self.assertEqual(confirm_response.status_code, 200)
+
+        receipt = OrderReceipt.objects.get(order=order, payment=payment)
+        self._assert_client_receipt_download(order.id, receipt.id, "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    @override_settings(
+        COINGATE_API_BASE_URL="https://api-sandbox.coingate.com/v2",
+        COINGATE_API_TOKEN="coingate_token_test",
+        ORDER_COINGATE_CALLBACK_URL="https://backend.test/api/v1/orders/payments/bitcoin-coingate/callback/",
+        ORDER_COINGATE_SUCCESS_URL="https://frontend.test/client/payments/bitcoin-coingate/return?payment=coingate_success",
+        ORDER_COINGATE_CANCEL_URL="https://frontend.test/client/payments/bitcoin-coingate/return?payment=coingate_cancel",
+    )
+    @patch("modules.pedidos_checkout_pagos.services.order_coingate_service.requests.get")
+    @patch("modules.pedidos_checkout_pagos.services.order_coingate_service.requests.post")
+    def test_receipt_generation_and_download_for_coingate(self, post_mock, get_mock):
+        post_mock.return_value = Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "id": "cg-order-receipt-001",
+                    "order_id": "homechef-order-demo",
+                    "payment_url": "https://pay-sandbox.coingate.com/invoice/cg-order-receipt-001",
+                    "status": "new",
+                }
+            ),
+        )
+        get_mock.return_value = Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "id": "cg-order-receipt-001",
+                    "order_id": "homechef-order-demo",
+                    "status": "paid",
+                }
+            ),
+        )
+        order = self._create_checkout_order("bitcoin_coingate", fulfillment_type="pickup")
+        payment = OrderPayment.objects.get(order=order)
+
+        response = self.api.post(
+            "/api/v1/orders/payments/bitcoin-coingate/confirm-return/",
+            {"provider": "COINGATE_SANDBOX", "coingate_order_id": payment.external_reference},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        receipt = OrderReceipt.objects.get(order=order, payment=payment)
+        self._assert_client_receipt_download(order.id, receipt.id, "pdf", "application/pdf")
+
+    def test_receipt_endpoints_reject_unrelated_client(self):
+        order = self._create_checkout_order("qr_simulado", fulfillment_type="pickup")
+        payment = OrderPayment.objects.get(order=order)
+        session = SimulatedQRPaymentSession.objects.get(payment=payment)
+        self.assertEqual(self.api.post(f"/api/v1/orders/payments/qr-sessions/{session.session_code}/start/", {}, format="json").status_code, 200)
+        with patch("modules.pedidos_checkout_pagos.services.qr_payment_service.sleep", return_value=None):
+            self.assertEqual(self.api.post(f"/api/v1/orders/payments/qr-sessions/{session.session_code}/confirm/", {}, format="json").status_code, 200)
+        receipt = OrderReceipt.objects.get(order=order, payment=payment)
+
+        other_client = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="other-client@test.com",
+            role=UserProfile.ROLE_CLIENT,
+            first_name="Other",
+            is_active=True,
+        )
+        self.api.force_authenticate(user=AuthenticatedProfile(other_client))
+        response = self.api.get(f"/api/v1/orders/my-orders/{order.id}/receipts/{receipt.id}/download/?file_format=pdf")
+        self.assertEqual(response.status_code, 404)
+
+    def _create_checkout_order(self, payment_method: str, *, fulfillment_type: str):
+        add_response = self.api.post("/api/v1/orders/cart/items/", {"dish_id": self.dish.id, "quantity": 1}, format="json")
+        cart_id = add_response.data["cart"]["id"]
+        preview_response = self.api.post(
+            "/api/v1/orders/checkout/preview/",
+            {
+                "cart_id": cart_id,
+                "fulfillment_type": fulfillment_type,
+                "payment_method": payment_method,
+            },
+            format="json",
+        )
+        confirm_payload = {
+            "cart_id": cart_id,
+            "fulfillment_type": fulfillment_type,
+            "payment_method": payment_method,
+            "expected_total": preview_response.data["pricing"]["total"],
+        }
+        confirm_response = self.api.post("/api/v1/orders/checkout/confirm/", confirm_payload, format="json")
+        self.assertEqual(confirm_response.status_code, 201)
+        return Order.objects.get(id=confirm_response.data["order_id"])
+
+    def _create_historical_order(self, *, items: list[tuple[Dish, int]], fulfillment_type: str = Order.FulfillmentType.PICKUP):
+        subtotal = sum(Decimal(str(dish.price)) * quantity for dish, quantity in items)
+        order = Order.objects.create(
+            client=self.client_profile,
+            chef=items[0][0].chef,
+            status=Order.Status.PICKED_UP if fulfillment_type == Order.FulfillmentType.PICKUP else Order.Status.DELIVERED,
+            fulfillment_type=fulfillment_type,
+            payment_method=Order.PaymentMethod.CASH,
+            subtotal=subtotal,
+            total=subtotal,
+        )
+        for dish, quantity in items:
+            OrderItem.objects.create(
+                order=order,
+                dish=dish,
+                quantity=quantity,
+                unit_price=Decimal(str(dish.price)),
+                subtotal=Decimal(str(dish.price)) * quantity,
+                dish_name_snapshot=dish.name,
+                dish_description_snapshot=dish.description,
+                dish_image_url_snapshot=dish.image_url,
+            )
+        return order
+
+    def _assert_client_receipt_download(self, order_id: str, receipt_id: str, format_value: str, content_type: str):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.client_profile))
+        list_response = self.api.get(f"/api/v1/orders/my-orders/{order_id}/receipts/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.data["items"]), 1)
+        download_response = self.api.get(f"/api/v1/orders/my-orders/{order_id}/receipts/{receipt_id}/download/?file_format={format_value}")
+        self.assertEqual(download_response.status_code, 200, getattr(download_response, "data", download_response.content))
+        self.assertEqual(download_response["Content-Type"], content_type)
+        self.assertGreater(len(download_response.content), 50)
+
+    def _assert_chef_receipt_download(self, order_id: str, receipt_id: str, format_value: str, content_type: str):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.chef_profile))
+        list_response = self.api.get(f"/api/v1/orders/chef/orders/{order_id}/receipts/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.data["items"]), 1)
+        download_response = self.api.get(f"/api/v1/orders/chef/orders/{order_id}/receipts/{receipt_id}/download/?file_format={format_value}")
+        self.assertEqual(download_response.status_code, 200, getattr(download_response, "data", download_response.content))
+        self.assertEqual(download_response["Content-Type"], content_type)
+        self.assertGreater(len(download_response.content), 50)
 
 
 class StockContentionTransactionTests(TransactionTestCase):

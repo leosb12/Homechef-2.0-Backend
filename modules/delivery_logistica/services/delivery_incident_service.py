@@ -82,6 +82,13 @@ class DeliveryIncidentService:
         assignment = self._get_assignment_for_delivery(delivery, assignment_id, lock=True)
         self._assert_incident_report_allowed(assignment, reporter_role="REPARTIDOR")
         incident = self._create_incident(assignment, delivery, "REPARTIDOR", payload)
+        if assignment.delivery_user_id:
+            from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
+
+            publish_assignment_snapshot_for_delivery(
+                assignment.id,
+                str(assignment.delivery_user.supabase_user_id),
+            )
         return {
             "incident": self._serialize_incident(incident, viewer_role="REPARTIDOR"),
             "incidents": self._serialize_incident_collection(assignment, viewer_role="REPARTIDOR"),
@@ -106,6 +113,13 @@ class DeliveryIncidentService:
         incident = self._get_incident(assignment, incident_id)
         self._assert_resolution_allowed(incident, resolver_role="REPARTIDOR")
         self._resolve_incident(incident, delivery, "REPARTIDOR", payload)
+        if assignment.delivery_user_id:
+            from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
+
+            publish_assignment_snapshot_for_delivery(
+                assignment.id,
+                str(assignment.delivery_user.supabase_user_id),
+            )
         return {
             "incident": self._serialize_incident(incident, viewer_role="REPARTIDOR"),
             "incidents": self._serialize_incident_collection(assignment, viewer_role="REPARTIDOR"),
@@ -275,6 +289,16 @@ class DeliveryIncidentService:
             raise DeliveryIncidentError("La entrega ya no admite incidencias en su estado actual.", "incident_transition_not_allowed")
         if reporter_role == "CLIENTE" and assignment.status == DeliveryAssignment.Status.UNASSIGNED:
             raise DeliveryIncidentError("La entrega aun no entro en una etapa reportable para el cliente.", "incident_transition_not_allowed")
+        if reporter_role == "REPARTIDOR" and assignment.status not in {
+            DeliveryAssignment.Status.ASSIGNED,
+            DeliveryAssignment.Status.AT_CHEF,
+            DeliveryAssignment.Status.PICKED_UP,
+            DeliveryAssignment.Status.EN_ROUTE_TO_CLIENT,
+        }:
+            raise DeliveryIncidentError(
+                "El repartidor solo puede registrar incidencias en entregas activas asignadas a su usuario.",
+                "incident_transition_not_allowed",
+            )
 
     def _assert_resolution_allowed(self, incident: DeliveryIncident, resolver_role: str):
         if incident.status != DeliveryIncident.Status.OPEN:

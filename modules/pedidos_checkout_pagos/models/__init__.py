@@ -333,6 +333,46 @@ class OrderPaymentEvent(models.Model):
         return f"{self.payment_id}: {self.event_code}"
 
 
+class OrderReceipt(models.Model):
+    id = models.CharField(max_length=64, primary_key=True, default=uuid4_string, editable=False)
+    order = models.ForeignKey("pedidos_checkout_pagos.Order", on_delete=models.CASCADE, related_name="receipts")
+    payment = models.ForeignKey(
+        "pedidos_checkout_pagos.OrderPayment",
+        on_delete=models.SET_NULL,
+        related_name="receipts",
+        null=True,
+        blank=True,
+    )
+    receipt_number = models.CharField(max_length=80, unique=True, db_index=True)
+    payment_method = models.CharField(max_length=30, choices=Order.PaymentMethod.choices)
+    payment_status = models.CharField(max_length=20, choices=OrderPayment.Status.choices)
+    order_status = models.CharField(max_length=40, choices=Order.Status.choices)
+    currency = models.CharField(max_length=3, default="BOB")
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    service_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    external_reference = models.CharField(max_length=255, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "order_receipts"
+        indexes = [
+            models.Index(fields=["order", "issued_at"]),
+            models.Index(fields=["payment_method", "issued_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["order", "payment"], name="unique_receipt_per_order_payment"),
+        ]
+
+    def __str__(self):
+        return f"{self.receipt_number} - {self.order_id}"
+
+
 class SimulatedQRPaymentSession(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pendiente"
@@ -386,6 +426,16 @@ class PickupConfirmation(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     pickup_instructions = models.CharField(max_length=255, default="Presenta este codigo al cocinero para retirar tu pedido.")
     pickup_schedule_note = models.CharField(max_length=255, blank=True)
+    selected_slot_start = models.DateTimeField(null=True, blank=True)
+    selected_slot_end = models.DateTimeField(null=True, blank=True)
+    pickup_window_start = models.DateTimeField(null=True, blank=True)
+    pickup_window_end = models.DateTimeField(null=True, blank=True)
+    pickup_grace_deadline = models.DateTimeField(null=True, blank=True)
+    pickup_retention_deadline = models.DateTimeField(null=True, blank=True)
+    pickup_no_show_flag = models.BooleanField(default=False)
+    no_show_marked_at = models.DateTimeField(null=True, blank=True)
+    retention_extension_count = models.PositiveSmallIntegerField(default=0)
+    last_retention_extension_at = models.DateTimeField(null=True, blank=True)
     confirmed_by_role = models.CharField(max_length=30, blank=True)
     confirmed_by_user = models.ForeignKey(
         UserProfile,
@@ -404,6 +454,7 @@ class PickupConfirmation(models.Model):
         indexes = [
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["confirmed_at"]),
+            models.Index(fields=["pickup_no_show_flag", "pickup_grace_deadline"]),
         ]
 
     def __str__(self):

@@ -10,6 +10,8 @@ from modules.confianza_administracion_seguridad.serializers import (
     NotificationTokenDeactivateSerializer,
 )
 from modules.confianza_administracion_seguridad.services import (
+    DeliveryActiveOrdersAdminError,
+    DeliveryActiveOrdersAdminService,
     DeliveryDriverAdminError,
     DeliveryDriverAdminService,
     NotificationService,
@@ -109,6 +111,26 @@ def delivery_driver_status_update_view(request, user_id: str):
         return Response(_error_body(exc), status=_error_status(exc.code))
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def delivery_active_orders_collection_view(request):
+    try:
+        payload = DeliveryActiveOrdersAdminService().list_active_orders(request.user.id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryActiveOrdersAdminError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def delivery_active_order_detail_view(request, order_id: str):
+    try:
+        payload = DeliveryActiveOrdersAdminService().get_active_order_detail(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryActiveOrdersAdminError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
 def _error_body(exc: NotificationServiceError):
     body = {"detail": exc.message, "code": exc.code}
     body.update(exc.details or {})
@@ -116,7 +138,7 @@ def _error_body(exc: NotificationServiceError):
 
 
 def _error_status(code: str):
-    if code in {"user_not_found", "notification_not_found", "device_token_not_found", "delivery_not_found"}:
+    if code in {"user_not_found", "notification_not_found", "device_token_not_found", "delivery_not_found", "order_not_found"}:
         return status.HTTP_404_NOT_FOUND
     if code in {"token_required", "invalid_status"}:
         return status.HTTP_400_BAD_REQUEST

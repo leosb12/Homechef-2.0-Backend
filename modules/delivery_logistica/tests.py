@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident, DeliveryLocationPing, DeliveryRouteSnapshot
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, Dish
-from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
+from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderAddress, OrderItem, OrderPayment
 
 
@@ -45,6 +45,8 @@ class DeliveryLogisticsApiTests(TestCase):
             role=UserProfile.ROLE_DELIVERY,
             first_name="Rider",
             is_active=True,
+            location_latitude=-17.7815,
+            location_longitude=-63.1811,
         )
         self.other_delivery = UserProfile.objects.create(
             supabase_user_id=uuid4(),
@@ -52,6 +54,24 @@ class DeliveryLogisticsApiTests(TestCase):
             role=UserProfile.ROLE_DELIVERY,
             first_name="Otro",
             is_active=True,
+            location_latitude=-17.79,
+            location_longitude=-63.19,
+        )
+        DeliveryProfile.objects.create(
+            user=self.delivery_profile,
+            vehicle_type=DeliveryProfile.VehicleType.MOTORCYCLE,
+            vehicle_brand="Yamaha",
+            vehicle_model="FZ",
+            vehicle_plate="123-AAA",
+            approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
+        )
+        DeliveryProfile.objects.create(
+            user=self.other_delivery,
+            vehicle_type=DeliveryProfile.VehicleType.MOTORCYCLE,
+            vehicle_brand="Suzuki",
+            vehicle_model="GN",
+            vehicle_plate="456-BBB",
+            approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
         )
         ChefAvailability.objects.create(
             chef=self.chef_profile,
@@ -88,11 +108,10 @@ class DeliveryLogisticsApiTests(TestCase):
         assigned_response = self.api.get("/api/v1/logistics/delivery/assigned/")
         self.assertEqual(assigned_response.status_code, 200)
         self.assertEqual(len(assigned_response.data["items"]), 1)
-        self.assertEqual(assigned_response.data["items"][0]["available_actions"], ["accept"])
-
-        accept_response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/accept/", {}, format="json")
-        self.assertEqual(accept_response.status_code, 200)
-        self.assertEqual(accept_response.data["assignment"]["status"], DeliveryAssignment.Status.ASSIGNED)
+        self.assertEqual(assigned_response.data["items"][0]["status"], DeliveryAssignment.Status.ASSIGNED)
+        self.assertEqual(assigned_response.data["items"][0]["available_actions"], ["picked_up"])
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
 
         arrived_response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/arrived-chef/", {}, format="json")
         self.assertEqual(arrived_response.status_code, 200)
@@ -100,7 +119,7 @@ class DeliveryLogisticsApiTests(TestCase):
 
         picked_up_response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/picked-up/", {}, format="json")
         self.assertEqual(picked_up_response.status_code, 200)
-        self.assertEqual(picked_up_response.data["assignment"]["status"], DeliveryAssignment.Status.PICKED_UP)
+        self.assertEqual(picked_up_response.data["assignment"]["status"], DeliveryAssignment.Status.EN_ROUTE_TO_CLIENT)
         order.refresh_from_db()
         self.assertEqual(order.status, Order.Status.OUT_FOR_DELIVERY)
 
@@ -208,6 +227,59 @@ class DeliveryLogisticsApiTests(TestCase):
         self.assertEqual(refresh_response.data["navigation"]["destination"]["kind"], "CHEF")
         self.assertGreater(refresh_response.data["route"]["distance_meters"], 0)
 
+    def test_delivery_route_quality_exposes_provider_and_used_points(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(
+            order=order,
+            status=DeliveryAssignment.Status.ASSIGNED,
+            delivery_user=self.delivery_profile,
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/route/refresh/",
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("quality", response.data["map"])
+        self.assertIn("provider", response.data["map"]["quality"])
+        self.assertEqual(
+            response.data["map"]["quality"]["destination_used"]["kind"],
+            "CHEF",
+        )
+        self.assertIn("provider", response.data["navigation"]["summary"])
+
+    def test_delivery_grouped_route_lists_next_stops_for_same_rider(self):
+        first_order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        second_order = self._create_delivery_order(payment_method=Order.PaymentMethod.BITCOIN_COINGATE)
+        first_assignment = DeliveryAssignment.objects.create(
+            order=first_order,
+            status=DeliveryAssignment.Status.ASSIGNED,
+            delivery_user=self.delivery_profile,
+        )
+        DeliveryAssignment.objects.create(
+            order=second_order,
+            status=DeliveryAssignment.Status.PICKED_UP,
+            delivery_user=self.delivery_profile,
+        )
+        DeliveryLocationPing.objects.create(
+            assignment=first_assignment,
+            source=DeliveryLocationPing.Source.DELIVERY_APP,
+            latitude=-17.784,
+            longitude=-63.18,
+            recorded_at=timezone.now(),
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.get(f"/api/v1/logistics/delivery/{first_assignment.id}/")
+        self.assertEqual(response.status_code, 200)
+        grouped = response.data["assignment"]["map"]["grouped_route"]
+        self.assertEqual(grouped["active_assignment_count"], 2)
+        self.assertGreaterEqual(len(grouped["stops"]), 2)
+        self.assertTrue(grouped["next_stop"])
+        self.assertGreater(grouped["distance_meters"], 0)
+
     def test_delivery_cannot_operate_assignment_taken_by_other_rider(self):
         order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
         assignment = DeliveryAssignment.objects.create(
@@ -217,8 +289,8 @@ class DeliveryLogisticsApiTests(TestCase):
         )
         self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
         response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/arrived-chef/", {}, format="json")
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.data["code"], "assignment_not_found")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "assignment_reassigned")
 
     def test_delivery_can_report_and_resolve_incident_with_evidence(self):
         order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
@@ -257,6 +329,78 @@ class DeliveryLogisticsApiTests(TestCase):
         self.assertEqual(resolve_response.status_code, 200)
         self.assertEqual(resolve_response.data["incident"]["status"], DeliveryIncident.Status.RESOLVED)
         self.assertFalse(resolve_response.data["incidents"]["delivery_blocked"])
+
+    def test_delivery_accepts_unassigned_assignment_without_outer_join_lock_error(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/accept/",
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.status, DeliveryAssignment.Status.ASSIGNED)
+        self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
+
+    def test_delivery_cannot_report_incident_on_unassigned_assignment(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/incidents/",
+            {
+                "code": DeliveryIncident.Code.DELAY,
+                "description": "Intento reportar antes de tomar la entrega.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_delivery_reject_reassigns_to_next_candidate(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(
+            order=order,
+            status=DeliveryAssignment.Status.ASSIGNED,
+            delivery_user=self.delivery_profile,
+            assigned_at=timezone.now(),
+            metadata={"assigned_delivery_user_id": str(self.delivery_profile.supabase_user_id)},
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/reject/", {}, format="json")
+        self.assertEqual(response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.delivery_user_id, self.other_delivery.id)
+        self.assertEqual(response.data["reassigned_to"]["id"], str(self.other_delivery.supabase_user_id))
+
+    def test_only_nearest_driver_sees_auto_assigned_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        primary_response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        self.assertEqual(primary_response.status_code, 200)
+        self.assertEqual(len(primary_response.data["items"]), 1)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        secondary_response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        self.assertEqual(secondary_response.status_code, 200)
+        self.assertEqual(len(secondary_response.data["items"]), 0)
+
+    def test_delivery_board_hides_assignment_until_order_is_ready_for_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        order.status = Order.Status.AWAITING_CHEF_CONFIRMATION
+        order.save(update_fields=["status", "updated_at"])
+        DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["items"]), 0)
 
     def _create_delivery_order(self, payment_method: str):
         order = Order.objects.create(

@@ -1,3 +1,4 @@
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,6 +17,7 @@ from ..serializers import (
     CheckoutPreviewSerializer,
     CoinGateReturnConfirmSerializer,
     PickupConfirmSerializer,
+    ReceiptDownloadQuerySerializer,
     StripeReturnConfirmSerializer,
 )
 from ..services import (
@@ -27,6 +29,10 @@ from ..services import (
     OrderCoinGateServiceError,
     OrderCashService,
     OrderCashServiceError,
+    OrderRepeatService,
+    OrderRepeatServiceError,
+    OrderReceiptService,
+    OrderReceiptServiceError,
     OrderStripeService,
     OrderStripeServiceError,
     QRPaymentService,
@@ -138,6 +144,16 @@ def my_order_detail_view(request, order_id: str):
         return Response(_order_error_body(exc), status=_order_error_status(exc.code))
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def my_order_repeat_view(request, order_id: str):
+    try:
+        payload = OrderRepeatService().repeat_client_order(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderRepeatServiceError as exc:
+        return Response(_repeat_error_body(exc), status=_repeat_error_status(exc.code))
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsClienteRole])
 def my_order_tracking_view(request, order_id: str):
@@ -146,6 +162,35 @@ def my_order_tracking_view(request, order_id: str):
         return Response(payload, status=status.HTTP_200_OK)
     except OrderCashServiceError as exc:
         return Response(_order_error_body(exc), status=_order_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def my_order_receipts_view(request, order_id: str):
+    try:
+        payload = OrderReceiptService().list_client_receipts(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderReceiptServiceError as exc:
+        return Response(_receipt_error_body(exc), status=_receipt_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def my_order_receipt_download_view(request, order_id: str, receipt_id: str):
+    serializer = ReceiptDownloadQuerySerializer(data=request.query_params)
+    serializer.is_valid(raise_exception=True)
+    try:
+        payload = OrderReceiptService().download_client_receipt(
+            request.user.id,
+            order_id,
+            receipt_id,
+            serializer.validated_data["file_format"],
+        )
+        response = HttpResponse(payload.content, content_type=payload.content_type)
+        response["Content-Disposition"] = f'attachment; filename="{payload.filename}"'
+        return response
+    except OrderReceiptServiceError as exc:
+        return Response(_receipt_error_body(exc), status=_receipt_error_status(exc.code))
 
 
 @api_view(["GET", "POST"])
@@ -191,6 +236,35 @@ def chef_order_tracking_view(request, order_id: str):
         return Response(payload, status=status.HTTP_200_OK)
     except OrderCashServiceError as exc:
         return Response(_order_error_body(exc), status=_order_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsChefRole])
+def chef_order_receipts_view(request, order_id: str):
+    try:
+        payload = OrderReceiptService().list_chef_receipts(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderReceiptServiceError as exc:
+        return Response(_receipt_error_body(exc), status=_receipt_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsChefRole])
+def chef_order_receipt_download_view(request, order_id: str, receipt_id: str):
+    serializer = ReceiptDownloadQuerySerializer(data=request.query_params)
+    serializer.is_valid(raise_exception=True)
+    try:
+        payload = OrderReceiptService().download_chef_receipt(
+            request.user.id,
+            order_id,
+            receipt_id,
+            serializer.validated_data["file_format"],
+        )
+        response = HttpResponse(payload.content, content_type=payload.content_type)
+        response["Content-Disposition"] = f'attachment; filename="{payload.filename}"'
+        return response
+    except OrderReceiptServiceError as exc:
+        return Response(_receipt_error_body(exc), status=_receipt_error_status(exc.code))
 
 
 @api_view(["GET"])
@@ -290,6 +364,36 @@ def chef_order_pickup_confirm_view(request, order_id: str):
 @permission_classes([IsAuthenticated, IsDeliveryRole])
 def delivery_cash_orders_view(request):
     return Response(OrderCashService().list_delivery_cash_orders(request.user.id), status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsChefRole])
+def chef_order_pickup_no_show_view(request, order_id: str):
+    try:
+        payload = OrderCashService().chef_mark_pickup_no_show(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderCashServiceError as exc:
+        return Response(_order_error_body(exc), status=_order_error_status(exc.code))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsChefRole])
+def chef_order_pickup_extend_retention_view(request, order_id: str):
+    try:
+        payload = OrderCashService().chef_extend_pickup_retention(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderCashServiceError as exc:
+        return Response(_order_error_body(exc), status=_order_error_status(exc.code))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsChefRole])
+def chef_order_pickup_close_retention_view(request, order_id: str):
+    try:
+        payload = OrderCashService().chef_close_pickup_retention(request.user.id, order_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except OrderCashServiceError as exc:
+        return Response(_order_error_body(exc), status=_order_error_status(exc.code))
 
 
 @api_view(["POST"])
@@ -425,11 +529,14 @@ def _checkout_error_status(code: str):
         "stock_validation_failed",
         "payment_method_not_supported",
         "chef_location_missing",
+        "pickup_slot_required",
+        "pickup_slot_invalid",
+        "pickup_slots_unavailable",
     }:
         return status.HTTP_400_BAD_REQUEST
     if code in {"cart_not_found", "empty_cart", "client_not_found"}:
         return status.HTTP_404_NOT_FOUND
-    if code in {"chef_unavailable"}:
+    if code in {"chef_unavailable", "pickup_unavailable"}:
         return status.HTTP_409_CONFLICT
     return status.HTTP_400_BAD_REQUEST
 
@@ -495,4 +602,30 @@ def _stripe_error_status(code: str):
         return status.HTTP_502_BAD_GATEWAY
     if code in {"provider_not_configured", "provider_request_failed"}:
         return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_400_BAD_REQUEST
+
+
+def _receipt_error_body(exc: OrderReceiptServiceError):
+    body = {"detail": exc.message, "code": exc.code}
+    body.update(exc.details or {})
+    return body
+
+
+def _receipt_error_status(code: str):
+    if code in {"order_not_found", "receipt_not_found", "client_not_found", "chef_not_found"}:
+        return status.HTTP_404_NOT_FOUND
+    if code in {"receipt_format_invalid"}:
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_400_BAD_REQUEST
+
+
+def _repeat_error_body(exc: OrderRepeatServiceError):
+    body = {"detail": exc.message, "code": exc.code}
+    body.update(exc.details or {})
+    return body
+
+
+def _repeat_error_status(code: str):
+    if code in {"order_not_found", "client_not_found"}:
+        return status.HTTP_404_NOT_FOUND
     return status.HTTP_400_BAD_REQUEST

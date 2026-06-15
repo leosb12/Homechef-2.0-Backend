@@ -52,6 +52,8 @@ class OSMRoutingService:
             "polyline": polyline,
             "metadata": {
                 "code": payload.get("code", ""),
+                "uses_fallback": False,
+                "fallback_reason": "",
                 "steps": steps,
             },
         }
@@ -88,6 +90,7 @@ class OSMRoutingService:
             "duration_seconds": duration_seconds,
             "polyline": polyline,
             "metadata": {
+                "uses_fallback": True,
                 "fallback_reason": reason,
                 "steps": steps,
             },

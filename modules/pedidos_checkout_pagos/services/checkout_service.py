@@ -1,13 +1,16 @@
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from secrets import randbelow
 from uuid import UUID
 
 from modules.confianza_administracion_seguridad.services import NotificationService
 from django.db import transaction
+from django.utils import timezone
 
 from modules.delivery_logistica.services.base_delivery_service import BaseDeliveryService
 from modules.delivery_logistica.services.osm_routing_service import OSMRoutingService
 from modules.gestion_cocinero.models import ChefAvailability
+from modules.gestion_cocinero.services.availability_rules import DAY_LABELS, availability_summary
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import (
     Cart,
@@ -42,6 +45,10 @@ class CheckoutService:
     DISCOUNT_TOTAL = Decimal("0.00")
     DEFAULT_PREPARATION_MINUTES = 25
     DEFAULT_DELIVERY_MINUTES = 18
+    PICKUP_SLOT_DURATION_MINUTES = 30
+    PICKUP_GRACE_MINUTES = 15
+    PICKUP_RETENTION_MINUTES = 45
+    PICKUP_LOOKAHEAD_DAYS = 7
     PICKUP_INSTRUCTIONS = "Presenta este codigo al cocinero para retirar tu pedido."
 
     def __init__(self):
@@ -101,6 +108,7 @@ class CheckoutService:
             )
 
         self._validate_address(fulfillment_type, address)
+        pickup_context = self._resolve_pickup_context(cart.chef, payload, require_slot=False)
 
         delivery_fee = self.DELIVERY_FEE if fulfillment_type == Order.FulfillmentType.DELIVERY else self.PICKUP_FEE
         total = subtotal + delivery_fee + self.SERVICE_FEE - self.DISCOUNT_TOTAL
@@ -133,6 +141,7 @@ class CheckoutService:
                 Order.PaymentMethod.QR_SIMULATED,
                 Order.PaymentMethod.BITCOIN_COINGATE,
             ],
+            "pickup_policy": self._pickup_context_response(pickup_context),
             "notes": notes,
         }
 
@@ -167,6 +176,11 @@ class CheckoutService:
         client = self._require_client(user_id)
         cart = self._get_active_cart(client, payload["cart_id"], lock=True)
         preview = self.preview(user_id, payload)
+        pickup_context = self._resolve_pickup_context(
+            cart.chef,
+            payload,
+            require_slot=payload["fulfillment_type"] == Order.FulfillmentType.PICKUP,
+        )
         if not preview["stock_validation"]["ok"]:
             raise CheckoutServiceError(
                 "No se puede confirmar el pedido por disponibilidad insuficiente.",
@@ -232,11 +246,26 @@ class CheckoutService:
             )
             self.delivery_service.ensure_assignment_for_order(order)
         else:
+            selected_slot = pickup_context.get("selected_slot_raw") or {}
             PickupConfirmation.objects.create(
                 order=order,
                 pickup_code=self._generate_pickup_code(),
                 pickup_instructions=self.PICKUP_INSTRUCTIONS,
-                pickup_schedule_note=f"Retiro estimado en {self.DEFAULT_PREPARATION_MINUTES} minutos.",
+                pickup_schedule_note=self._pickup_schedule_note(selected_slot),
+                selected_slot_start=selected_slot.get("start_at"),
+                selected_slot_end=selected_slot.get("end_at"),
+            )
+            self._log_event(
+                order,
+                "PICKUP_SLOT_SELECTED",
+                "Horario de retiro seleccionado",
+                "CLIENTE",
+                user_id,
+                {
+                    "pickup_slot": selected_slot.get("id", ""),
+                    "pickup_window_start": selected_slot.get("start_at").isoformat() if selected_slot.get("start_at") else "",
+                    "pickup_window_end": selected_slot.get("end_at").isoformat() if selected_slot.get("end_at") else "",
+                },
             )
 
         payment = OrderPayment.objects.create(
@@ -391,6 +420,156 @@ class CheckoutService:
             code = f"{randbelow(1000000):06d}"
             if not PickupConfirmation.objects.filter(pickup_code=code).exists():
                 return code
+
+    def _resolve_pickup_context(self, chef: UserProfile, payload: dict, require_slot: bool):
+        if payload["fulfillment_type"] != Order.FulfillmentType.PICKUP:
+            return None
+
+        availability = ChefAvailability.objects.filter(chef=chef).first()
+        if not availability or not availability.is_active or not availability.accept_pickup:
+            raise CheckoutServiceError(
+                "El cocinero no tiene retiro habilitado en este momento.",
+                "pickup_unavailable",
+            )
+
+        slots = self._build_pickup_slots(availability)
+        selected_slot_raw = str(payload.get("pickup_slot", "")).strip()
+        selected_slot = None
+
+        if not slots:
+            raise CheckoutServiceError(
+                "No hay horarios de retiro disponibles para este cocinero en la ventana actual.",
+                "pickup_slots_unavailable",
+            )
+        if selected_slot_raw:
+            selected_slot = next((slot for slot in slots if slot["id"] == selected_slot_raw), None)
+            if not selected_slot:
+                raise CheckoutServiceError(
+                    "El horario de retiro elegido ya no es valido. Selecciona otro disponible.",
+                    "pickup_slot_invalid",
+                )
+        elif require_slot:
+            selected_slot = slots[0]
+
+        return {
+            "requires_slot": True,
+            "slot_duration_minutes": self.PICKUP_SLOT_DURATION_MINUTES,
+            "grace_minutes": self.PICKUP_GRACE_MINUTES,
+            "retention_minutes": self.PICKUP_RETENTION_MINUTES,
+            "schedule_summary": availability.pickup_schedule or availability_summary(
+                {
+                    "weekly_schedule": [
+                        item
+                        for item in (availability.weekly_schedule or [])
+                        if "pickup" in (item.get("modes") or [])
+                    ]
+                }
+            ),
+            "available_slots": [self._serialize_pickup_slot(slot) for slot in slots],
+            "selected_slot": self._serialize_pickup_slot(selected_slot) if selected_slot else None,
+            "selected_slot_raw": selected_slot,
+        }
+
+    def _build_pickup_slots(self, availability: ChefAvailability):
+        weekly_schedule = availability.weekly_schedule or []
+        if not isinstance(weekly_schedule, list):
+            return []
+
+        current = timezone.localtime()
+        earliest_start = current + timedelta(minutes=self.DEFAULT_PREPARATION_MINUTES)
+        results = []
+        seen = set()
+        for day_offset in range(self.PICKUP_LOOKAHEAD_DAYS):
+            target = current + timedelta(days=day_offset)
+            target_date = target.date()
+            weekday = target.strftime("%A").lower()
+            for item in weekly_schedule:
+                if not item.get("enabled", True):
+                    continue
+                if item.get("day") != weekday:
+                    continue
+                modes = [str(mode).strip().lower() for mode in (item.get("modes") or [])]
+                if "pickup" not in modes:
+                    continue
+                start_at = self._make_local_datetime(target_date, str(item.get("start_time", "")))
+                end_at = self._make_local_datetime(target_date, str(item.get("end_time", "")))
+                if not start_at or not end_at or end_at <= start_at:
+                    continue
+                slot_start = max(start_at, self._round_up_slot(earliest_start))
+                if slot_start < start_at:
+                    slot_start = start_at
+                slot_end = slot_start + timedelta(minutes=self.PICKUP_SLOT_DURATION_MINUTES)
+                while slot_end <= end_at:
+                    slot_id = slot_start.isoformat()
+                    if slot_id not in seen:
+                        seen.add(slot_id)
+                        results.append(
+                            {
+                                "id": slot_id,
+                                "start_at": slot_start,
+                                "end_at": slot_end,
+                                "day_label": DAY_LABELS.get(weekday, weekday.title()),
+                            }
+                        )
+                    slot_start = slot_start + timedelta(minutes=self.PICKUP_SLOT_DURATION_MINUTES)
+                    slot_end = slot_start + timedelta(minutes=self.PICKUP_SLOT_DURATION_MINUTES)
+        results.sort(key=lambda slot: slot["start_at"])
+        return results
+
+    def _serialize_pickup_slot(self, slot: dict | None):
+        if not slot:
+            return None
+        start_at = slot["start_at"]
+        end_at = slot["end_at"]
+        return {
+            "id": slot["id"],
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "label": f"{slot['day_label']} {start_at.strftime('%H:%M')} - {end_at.strftime('%H:%M')}",
+            "day_label": slot["day_label"],
+        }
+
+    def _pickup_context_response(self, context: dict | None):
+        if not context:
+            return None
+        return {
+            "requires_slot": context["requires_slot"],
+            "slot_duration_minutes": context["slot_duration_minutes"],
+            "grace_minutes": context["grace_minutes"],
+            "retention_minutes": context["retention_minutes"],
+            "schedule_summary": context["schedule_summary"],
+            "available_slots": context["available_slots"],
+            "selected_slot": context["selected_slot"],
+        }
+
+    def _pickup_schedule_note(self, slot: dict | None):
+        if not slot:
+            return f"Retiro estimado en {self.DEFAULT_PREPARATION_MINUTES} minutos."
+        return (
+            f"Retira entre {slot['start_at'].strftime('%H:%M')} y {slot['end_at'].strftime('%H:%M')}."
+            f" Tolerancia adicional de {self.PICKUP_GRACE_MINUTES} minutos."
+        )
+
+    def _make_local_datetime(self, target_date, time_value: str):
+        try:
+            hour_text, minute_text = str(time_value).split(":")
+            moment = datetime.combine(
+                target_date,
+                time(hour=int(hour_text), minute=int(minute_text)),
+            )
+        except (TypeError, ValueError):
+            return None
+        return timezone.make_aware(moment, timezone.get_current_timezone())
+
+    def _round_up_slot(self, value):
+        minute = value.minute
+        slot = self.PICKUP_SLOT_DURATION_MINUTES
+        remainder = minute % slot
+        if remainder == 0 and value.second == 0 and value.microsecond == 0:
+            return value.replace(second=0, microsecond=0)
+        delta_minutes = slot - remainder if remainder else 0
+        rounded = value + timedelta(minutes=delta_minutes)
+        return rounded.replace(second=0, microsecond=0)
 
     def _log_status(self, order: Order, from_status: str, to_status: str, actor_role: str, actor_id: str, notes: str):
         OrderStatusHistory.objects.create(

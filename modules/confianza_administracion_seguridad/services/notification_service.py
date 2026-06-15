@@ -205,6 +205,90 @@ class NotificationService:
             ]
         )
 
+    def notify_pickup_no_show(self, order: Order, *, retention_deadline=None, actor_role: str = "SISTEMA"):
+        retention_label = (
+            timezone.localtime(retention_deadline).strftime("%d/%m %H:%M")
+            if retention_deadline
+            else "la politica operativa vigente"
+        )
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=order.client,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_NO_SHOW",
+                    title="Retiro en retencion",
+                    message=(
+                        f"Tu pedido {order.id} fue marcado como no presentado y queda retenido hasta {retention_label}."
+                    ),
+                    order=order,
+                    metadata={"actor_role": actor_role},
+                ),
+                self._build_notification(
+                    recipient=order.chef,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_NO_SHOW",
+                    title="Cliente no se presento",
+                    message=(
+                        f"El pedido {order.id} quedo en retencion por ausencia del cliente hasta {retention_label}."
+                    ),
+                    order=order,
+                    metadata={"actor_role": actor_role},
+                ),
+            ]
+        )
+
+    def notify_pickup_retention_extended(self, order: Order, *, retention_deadline=None):
+        retention_label = (
+            timezone.localtime(retention_deadline).strftime("%d/%m %H:%M")
+            if retention_deadline
+            else "la nueva hora operativa"
+        )
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=order.client,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_RETENTION_EXTENDED",
+                    title="Retencion extendida",
+                    message=f"El pedido {order.id} mantiene su retencion activa hasta {retention_label}.",
+                    order=order,
+                ),
+                self._build_notification(
+                    recipient=order.chef,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_RETENTION_EXTENDED",
+                    title="Retencion extendida",
+                    message=f"Extendiste la retencion operativa del pedido {order.id} hasta {retention_label}.",
+                    order=order,
+                ),
+            ]
+        )
+
+    def notify_pickup_retention_closed(self, order: Order, *, actor_role: str = "SISTEMA"):
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=order.client,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_RETENTION_CLOSED",
+                    title="Pedido cerrado por no retiro",
+                    message=f"El pedido {order.id} fue cerrado por no completarse el retiro dentro del tiempo permitido.",
+                    order=order,
+                    metadata={"actor_role": actor_role},
+                ),
+                self._build_notification(
+                    recipient=order.chef,
+                    category=OperationalNotification.Category.ORDER,
+                    event_code="PICKUP_RETENTION_CLOSED",
+                    title="Retencion cerrada",
+                    message=f"El pedido {order.id} fue cerrado por vencimiento de la retencion de retiro.",
+                    order=order,
+                    metadata={"actor_role": actor_role},
+                ),
+            ]
+        )
+
     def notify_delivery_assigned(self, assignment: DeliveryAssignment):
         recipients = [
             self._build_notification(

@@ -22,6 +22,7 @@ class CheckoutPreviewSerializer(serializers.Serializer):
         default=Order.PaymentMethod.CASH,
     )
     address = CheckoutAddressSerializer(required=False)
+    pickup_slot = serializers.CharField(required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     success_redirect_to = serializers.CharField(required=False, allow_blank=True)
     cancel_redirect_to = serializers.CharField(required=False, allow_blank=True)

@@ -289,6 +289,82 @@ class NotificationCenterTests(TestCase):
         delivery_profile.refresh_from_db()
         self.assertEqual(delivery_profile.approval_status, DeliveryProfile.ApprovalStatus.SUSPENDED)
 
+    def test_admin_can_read_active_delivery_orders_and_assignment_history(self):
+        admin_profile = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="admin.ops@test.com",
+            role=UserProfile.ROLE_ADMIN,
+            first_name="Ops",
+            is_active=True,
+        )
+        self.delivery_profile.location_latitude = -17.7812
+        self.delivery_profile.location_longitude = -63.1811
+        self.delivery_profile.save(update_fields=["location_latitude", "location_longitude", "updated_at"])
+        DeliveryProfile.objects.create(
+            user=self.delivery_profile,
+            vehicle_type=DeliveryProfile.VehicleType.MOTORCYCLE,
+            vehicle_brand="Honda",
+            vehicle_model="CB",
+            vehicle_plate="999-XYZ",
+            approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
+        )
+        order = Order.objects.create(
+            client=self.client_profile,
+            chef=self.chef_profile,
+            status=Order.Status.READY_FOR_DELIVERY,
+            fulfillment_type=Order.FulfillmentType.DELIVERY,
+            payment_method=Order.PaymentMethod.CASH,
+            subtotal=Decimal("20.00"),
+            total=Decimal("27.00"),
+            delivery_fee=Decimal("7.00"),
+        )
+        OrderAddress.objects.create(
+            order=order,
+            label="Casa",
+            contact_name="Cliente",
+            contact_phone="70000000",
+            line_1="Av principal 123",
+            reference="Puerta verde",
+            latitude=-17.78,
+            longitude=-63.18,
+        )
+        OrderItem.objects.create(
+            order=order,
+            dish=self.dish,
+            quantity=1,
+            unit_price=Decimal("20.00"),
+            subtotal=Decimal("20.00"),
+            dish_name_snapshot=self.dish.name,
+            dish_description_snapshot=self.dish.description,
+            dish_image_url_snapshot=self.dish.image_url,
+        )
+        OrderPayment.objects.create(
+            order=order,
+            method=Order.PaymentMethod.CASH,
+            status=OrderPayment.Status.PENDING,
+            currency="BOB",
+            amount=Decimal("27.00"),
+        )
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(admin_profile))
+        list_response = self.api.get("/api/v1/trust-admin/delivery-orders/active/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.data["summary"]["total"], 1)
+        self.assertEqual(list_response.data["items"][0]["order_id"], order.id)
+
+        detail_response = self.api.get(f"/api/v1/trust-admin/delivery-orders/active/{order.id}/")
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.data["order"]["delivery_assignment"]["id"], assignment.id)
+        self.assertEqual(
+            detail_response.data["order"]["delivery_assignment"]["delivery_user"]["id"],
+            str(self.delivery_profile.supabase_user_id),
+        )
+        self.assertIn(
+            "candidate_snapshot",
+            detail_response.data["order"]["delivery_assignment"]["operational_context"],
+        )
+
     def _open_slot(self):
         day = [
             "monday",

@@ -11,6 +11,7 @@ from django.utils import timezone
 from modules.confianza_administracion_seguridad.services import NotificationService
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderPayment, OrderPaymentEvent, OrderStatusHistory, OrderTimelineEvent
+from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
 
 
@@ -28,6 +29,7 @@ class OrderStripeService:
     def __init__(self):
         self.stock_service = DishStockService()
         self.notification_service = NotificationService()
+        self.receipt_service = OrderReceiptService()
 
     def create_payment(self, *, order: Order, payment: OrderPayment, success_redirect_to: str = "", cancel_redirect_to: str = ""):
         if not settings.STRIPE_SECRET_KEY:
@@ -169,6 +171,7 @@ class OrderStripeService:
             actor_id="",
             metadata={"provider_response": provider_response},
         )
+        self.receipt_service.ensure_receipt(order, payment, metadata={"provider_response": provider_response})
         self.notification_service.notify_payment_confirmed(order, payment)
 
     def _mark_pending(self, payment: OrderPayment, provider_response: dict):

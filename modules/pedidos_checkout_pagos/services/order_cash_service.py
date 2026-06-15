@@ -1,5 +1,7 @@
+from datetime import timedelta
 from uuid import UUID
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -19,6 +21,7 @@ from modules.pedidos_checkout_pagos.models import (
     PickupConfirmation,
     SimulatedQRPaymentSession,
 )
+from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
 
 
@@ -40,6 +43,10 @@ class OrderCashService:
         Order.Status.AWAITING_CHEF_CONFIRMATION,
         Order.Status.ACCEPTED,
     }
+    PICKUP_GRACE_MINUTES = 15
+    PICKUP_RETENTION_MINUTES = 45
+    PICKUP_RETENTION_EXTENSION_MINUTES = 15
+    PICKUP_RETENTION_MAX_EXTENSIONS = 1
 
     def __init__(self):
         self.stock_service = DishStockService()
@@ -47,13 +54,42 @@ class OrderCashService:
         self.delivery_tracking_service = DeliveryTrackingService()
         self.incident_service = DeliveryIncidentService()
         self.notification_service = NotificationService()
+        self.receipt_service = OrderReceiptService()
+
+    def _pickup_grace_minutes(self):
+        return int(getattr(settings, "PICKUP_GRACE_MINUTES", self.PICKUP_GRACE_MINUTES) or self.PICKUP_GRACE_MINUTES)
+
+    def _pickup_retention_minutes(self):
+        return int(
+            getattr(settings, "PICKUP_RETENTION_MINUTES", self.PICKUP_RETENTION_MINUTES) or self.PICKUP_RETENTION_MINUTES
+        )
+
+    def _pickup_retention_extension_minutes(self):
+        return int(
+            getattr(
+                settings,
+                "PICKUP_RETENTION_EXTENSION_MINUTES",
+                self.PICKUP_RETENTION_EXTENSION_MINUTES,
+            )
+            or self.PICKUP_RETENTION_EXTENSION_MINUTES
+        )
+
+    def _pickup_retention_max_extensions(self):
+        return int(
+            getattr(
+                settings,
+                "PICKUP_RETENTION_MAX_EXTENSIONS",
+                self.PICKUP_RETENTION_MAX_EXTENSIONS,
+            )
+            or self.PICKUP_RETENTION_MAX_EXTENSIONS
+        )
 
     def list_client_orders(self, user_id: str):
         client = self._require_profile(user_id, UserProfile.ROLE_CLIENT, "client_not_found", "Perfil de cliente no encontrado.")
         queryset = (
             Order.objects.filter(client=client)
             .select_related("chef", "address", "delivery_assignment", "delivery_assignment__delivery_user", "pickup_confirmation")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .order_by("-created_at")
         )
         return {"items": [self._serialize_order(order, "CLIENTE", str(client.supabase_user_id)) for order in queryset]}
@@ -128,7 +164,7 @@ class OrderCashService:
         queryset = (
             Order.objects.filter(chef=chef)
             .select_related("client", "address", "delivery_assignment", "delivery_assignment__delivery_user", "pickup_confirmation")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .order_by("-created_at")
         )
         return {"items": [self._serialize_order(order, "COCINERO", str(chef.supabase_user_id)) for order in queryset]}
@@ -152,7 +188,7 @@ class OrderCashService:
                 status__in=[Order.Status.READY_FOR_DELIVERY, Order.Status.OUT_FOR_DELIVERY],
             )
             .select_related("chef", "client", "address", "delivery_assignment", "delivery_assignment__delivery_user")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .order_by("-created_at")
         )
 
@@ -209,6 +245,8 @@ class OrderCashService:
             actor_id=str(chef.supabase_user_id),
             notes="Entrega sincronizada al marcar pedido listo",
         )
+        if order.fulfillment_type == Order.FulfillmentType.PICKUP:
+            self._start_pickup_window(order, chef)
         self.notification_service.notify_order_ready(order)
         return {"order": self._serialize_order(order, "COCINERO", str(chef.supabase_user_id))}
 
@@ -267,6 +305,7 @@ class OrderCashService:
     def chef_confirm_pickup(self, user_id: str, order_id: str, pickup_code: str):
         chef = self._require_profile(user_id, UserProfile.ROLE_CHEF, "chef_not_found", "Perfil de cocinero no encontrado.")
         order = self._get_order_for_chef(chef, order_id, lock=True)
+        self._sync_pickup_operational_state(order)
         self._assert_status(order, [Order.Status.READY_FOR_PICKUP], "transition_not_allowed", "El pedido no puede cerrarse por retiro en su estado actual.")
         if order.fulfillment_type != Order.FulfillmentType.PICKUP:
             raise OrderCashServiceError("El pedido no corresponde a retiro en punto.", "invalid_fulfillment_type")
@@ -288,6 +327,56 @@ class OrderCashService:
         self._move_order(order, Order.Status.PICKED_UP, "COCINERO", str(chef.supabase_user_id), notes, "ORDER_PICKED_UP", "Pedido retirado")
         self.notification_service.notify_payment_confirmed(order, payment) if payment and payment.method == Order.PaymentMethod.CASH else None
         self.notification_service.notify_order_picked_up(order)
+        return {"order": self._serialize_order(order, "COCINERO", str(chef.supabase_user_id))}
+
+    @transaction.atomic
+    def chef_mark_pickup_no_show(self, user_id: str, order_id: str):
+        chef = self._require_profile(user_id, UserProfile.ROLE_CHEF, "chef_not_found", "Perfil de cocinero no encontrado.")
+        order = self._get_order_for_chef(chef, order_id, lock=True)
+        pickup = self._get_actionable_pickup(order)
+        self._mark_pickup_no_show(
+            order,
+            pickup,
+            actor_role="COCINERO",
+            actor_id=str(chef.supabase_user_id),
+            force_now=True,
+        )
+        self.notification_service.notify_pickup_no_show(
+            order,
+            retention_deadline=pickup.pickup_retention_deadline,
+            actor_role="COCINERO",
+        )
+        return {"order": self._serialize_order(order, "COCINERO", str(chef.supabase_user_id))}
+
+    @transaction.atomic
+    def chef_extend_pickup_retention(self, user_id: str, order_id: str):
+        chef = self._require_profile(user_id, UserProfile.ROLE_CHEF, "chef_not_found", "Perfil de cocinero no encontrado.")
+        order = self._get_order_for_chef(chef, order_id, lock=True)
+        pickup = self._get_actionable_pickup(order)
+        self._extend_pickup_retention(
+            order,
+            pickup,
+            actor_role="COCINERO",
+            actor_id=str(chef.supabase_user_id),
+        )
+        self.notification_service.notify_pickup_retention_extended(
+            order,
+            retention_deadline=pickup.pickup_retention_deadline,
+        )
+        return {"order": self._serialize_order(order, "COCINERO", str(chef.supabase_user_id))}
+
+    @transaction.atomic
+    def chef_close_pickup_retention(self, user_id: str, order_id: str):
+        chef = self._require_profile(user_id, UserProfile.ROLE_CHEF, "chef_not_found", "Perfil de cocinero no encontrado.")
+        order = self._get_order_for_chef(chef, order_id, lock=True)
+        pickup = self._get_actionable_pickup(order, sync=False)
+        self._expire_pickup_retention(
+            order,
+            pickup,
+            actor_role="COCINERO",
+            actor_id=str(chef.supabase_user_id),
+        )
+        self.notification_service.notify_pickup_retention_closed(order, actor_role="COCINERO")
         return {"order": self._serialize_order(order, "COCINERO", str(chef.supabase_user_id))}
 
     @transaction.atomic
@@ -335,6 +424,7 @@ class OrderCashService:
         return {"order": self._serialize_order(order, "REPARTIDOR", str(delivery.supabase_user_id))}
 
     def _serialize_order(self, order: Order, viewer_role: str, viewer_actor_id: str):
+        self._sync_pickup_operational_state(order)
         payment = self._latest_payment(order)
         actions = self._available_actions(order, payment, viewer_role, viewer_actor_id)
         can_cancel, cancel_reason = self._client_cancel_policy(order, payment) if viewer_role == "CLIENTE" else (False, "")
@@ -373,6 +463,7 @@ class OrderCashService:
                 for item in order.items.all()
             ],
             "payment": self._serialize_payment(payment),
+            "receipts": self.receipt_service.serialize_receipts_for_order(order),
             "delivery": self._serialize_delivery(order, viewer_role),
             "pickup": self._serialize_pickup(order, viewer_role),
             "available_actions": actions,
@@ -440,19 +531,44 @@ class OrderCashService:
         if not pickup:
             return None
         show_code = viewer_role in {"CLIENTE", "COCINERO"}
+        state_label, state_message = self._pickup_state_text(order, pickup)
+        flags = self._pickup_operational_flags(order, pickup)
         return {
             "status": pickup.status,
             "pickup_code": pickup.pickup_code if show_code else "",
             "pickup_instructions": pickup.pickup_instructions,
             "pickup_schedule_note": pickup.pickup_schedule_note,
+            "selected_slot_start": pickup.selected_slot_start.isoformat() if pickup.selected_slot_start else None,
+            "selected_slot_end": pickup.selected_slot_end.isoformat() if pickup.selected_slot_end else None,
+            "pickup_window_start": pickup.pickup_window_start.isoformat() if pickup.pickup_window_start else None,
+            "pickup_window_end": pickup.pickup_window_end.isoformat() if pickup.pickup_window_end else None,
+            "pickup_grace_deadline": pickup.pickup_grace_deadline.isoformat() if pickup.pickup_grace_deadline else None,
+            "pickup_retention_deadline": pickup.pickup_retention_deadline.isoformat() if pickup.pickup_retention_deadline else None,
+            "pickup_no_show_flag": pickup.pickup_no_show_flag,
+            "no_show_marked_at": pickup.no_show_marked_at.isoformat() if pickup.no_show_marked_at else None,
+            "retention_extension_count": int(pickup.retention_extension_count or 0),
+            "last_retention_extension_at": pickup.last_retention_extension_at.isoformat() if pickup.last_retention_extension_at else None,
+            "state_label": state_label,
+            "state_message": state_message,
+            "operational_flags": flags,
+            "policy": {
+                "grace_minutes": self._pickup_grace_minutes(),
+                "retention_minutes": self._pickup_retention_minutes(),
+                "retention_extension_minutes": self._pickup_retention_extension_minutes(),
+                "retention_max_extensions": self._pickup_retention_max_extensions(),
+            },
             "confirmed_by_role": pickup.confirmed_by_role,
             "confirmed_at": pickup.confirmed_at.isoformat() if pickup.confirmed_at else None,
+            "available_actions": self._pickup_available_actions(order, pickup, viewer_role),
         }
 
     def _available_actions(self, order: Order, payment: OrderPayment | None, viewer_role: str, viewer_actor_id: str):
         if viewer_role == "CLIENTE":
             can_cancel, _ = self._client_cancel_policy(order, payment)
-            return ["cancel"] if can_cancel else []
+            actions = ["repeat"] if order.items.exists() else []
+            if can_cancel:
+                actions.append("cancel")
+            return actions
 
         if viewer_role == "COCINERO":
             if order.status == Order.Status.AWAITING_CHEF_CONFIRMATION:
@@ -465,7 +581,9 @@ class OrderCashService:
                 order.status == Order.Status.READY_FOR_PICKUP
                 and order.fulfillment_type == Order.FulfillmentType.PICKUP
             ):
-                return ["confirm_pickup"]
+                actions = ["confirm_pickup"]
+                actions.extend(self._pickup_available_actions(order, getattr(order, "pickup_confirmation", None), viewer_role))
+                return actions
             return []
 
         if viewer_role == "REPARTIDOR":
@@ -488,6 +606,20 @@ class OrderCashService:
             return []
 
         return []
+
+    def _pickup_available_actions(self, order: Order, pickup: PickupConfirmation | None, viewer_role: str):
+        if viewer_role != "COCINERO" or not pickup:
+            return []
+        flags = self._pickup_operational_flags(order, pickup)
+        actions = []
+        if flags["pickup_waiting_client"]:
+            actions.append("mark_pickup_no_show")
+        if flags["pickup_retention_active"]:
+            if int(pickup.retention_extension_count or 0) < self._pickup_retention_max_extensions():
+                actions.append("extend_pickup_retention")
+            if pickup.pickup_retention_deadline and timezone.now() >= pickup.pickup_retention_deadline:
+                actions.append("close_pickup_retention")
+        return actions
 
     def _client_cancel_policy(self, order: Order, payment: OrderPayment | None):
         if order.status not in self.CLIENT_CANCELABLE_STATUSES:
@@ -532,6 +664,7 @@ class OrderCashService:
         return timeline
 
     def _serialize_tracking(self, order: Order, viewer_role: str):
+        self._sync_pickup_operational_state(order)
         payment = self._latest_payment(order)
         timeline = self._serialize_timeline(order)
         steps = self._tracking_steps(order.fulfillment_type)
@@ -620,6 +753,17 @@ class OrderCashService:
             return "La entrega tiene una incidencia abierta que bloquea el cierre operativo hasta ser resuelta."
         if delivery_payload and delivery_payload.get("open_incidents", 0):
             return "La entrega tiene incidencias abiertas en seguimiento operativo."
+        pickup = getattr(order, "pickup_confirmation", None)
+        if (
+            pickup
+            and pickup.pickup_no_show_flag
+            and pickup.pickup_retention_deadline
+            and timezone.now() > pickup.pickup_retention_deadline
+            and order.status == Order.Status.READY_FOR_PICKUP
+        ):
+            return "La retencion del pickup ya vencio y el pedido espera cierre final del cocinero."
+        if pickup and pickup.pickup_no_show_flag and order.status == Order.Status.READY_FOR_PICKUP:
+            return "El cliente no se presento dentro de la tolerancia. El pedido queda en retencion temporal hasta agotar la politica operativa."
         if order.status == Order.Status.PAYMENT_VALIDATING:
             return "Pago en validacion antes de pasar al cocinero."
         if order.status == Order.Status.AWAITING_CHEF_CONFIRMATION:
@@ -645,6 +789,8 @@ class OrderCashService:
         if order.status == Order.Status.PAYMENT_FAILED:
             return "El pago fallo y el pedido no avanzo."
         if order.status == Order.Status.EXPIRED:
+            if pickup and pickup.pickup_no_show_flag:
+                return "El pedido expiro porque el cliente no retiro dentro de la ventana y la retencion configurada."
             return "El pedido expiro antes de completarse."
         return self._status_label(order.status)
 
@@ -698,7 +844,7 @@ class OrderCashService:
         order = (
             queryset
             .select_related("client", "chef")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "pickup_confirmation", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "pickup_confirmation", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .first()
         )
         if not order:
@@ -711,7 +857,7 @@ class OrderCashService:
             queryset = queryset.select_for_update()
         order = (
             queryset.select_related("client", "chef")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "pickup_confirmation", "qr_sessions", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "pickup_confirmation", "qr_sessions", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .first()
         )
         if not order:
@@ -727,7 +873,7 @@ class OrderCashService:
                 fulfillment_type=Order.FulfillmentType.DELIVERY,
             )
             .select_related("client", "chef")
-            .prefetch_related("items", "payments", "timeline_events", "status_history", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
+            .prefetch_related("items", "payments", "receipts", "timeline_events", "status_history", "delivery_assignment", "delivery_assignment__delivery_user", "delivery_assignment__location_pings", "delivery_assignment__incidents")
             .first()
         )
         if not order:
@@ -745,6 +891,7 @@ class OrderCashService:
         return payment
 
     def _get_pending_pickup_confirmation(self, order: Order):
+        self._sync_pickup_operational_state(order)
         pickup = getattr(order, "pickup_confirmation", None)
         if not pickup:
             raise OrderCashServiceError("El pedido no tiene configuracion de retiro en punto.", "pickup_not_found")
@@ -799,6 +946,13 @@ class OrderCashService:
             actor_id=str(actor.supabase_user_id),
             metadata={"payment_id": payment.id, **metadata},
         )
+        self.receipt_service.ensure_receipt(
+            payment.order,
+            payment,
+            actor_role=actor_role,
+            actor_id=str(actor.supabase_user_id),
+            metadata=metadata,
+        )
 
     def _confirm_pickup_confirmation(self, pickup: PickupConfirmation, actor: UserProfile, actor_role: str):
         pickup.status = PickupConfirmation.Status.CONFIRMED
@@ -814,6 +968,245 @@ class OrderCashService:
             actor_id=str(actor.supabase_user_id),
             metadata={"pickup_code": pickup.pickup_code},
         )
+
+    def _start_pickup_window(self, order: Order, actor: UserProfile):
+        pickup = getattr(order, "pickup_confirmation", None)
+        if not pickup:
+            return
+        now = timezone.now()
+        selected_start = pickup.selected_slot_start or now
+        selected_end = pickup.selected_slot_end or (selected_start + timedelta(minutes=30))
+        window_start = selected_start if selected_start > now else now
+        window_end = selected_end if selected_end > window_start else window_start + timedelta(minutes=30)
+        grace_deadline = window_end + timedelta(minutes=self._pickup_grace_minutes())
+        retention_deadline = grace_deadline + timedelta(minutes=self._pickup_retention_minutes())
+        pickup.pickup_window_start = window_start
+        pickup.pickup_window_end = window_end
+        pickup.pickup_grace_deadline = grace_deadline
+        pickup.pickup_retention_deadline = retention_deadline
+        pickup.pickup_no_show_flag = False
+        pickup.no_show_marked_at = None
+        pickup.retention_extension_count = 0
+        pickup.last_retention_extension_at = None
+        pickup.pickup_schedule_note = (
+            f"Retira entre {window_start.astimezone(timezone.get_current_timezone()).strftime('%H:%M')}"
+            f" y {window_end.astimezone(timezone.get_current_timezone()).strftime('%H:%M')}. "
+            f"Tolerancia hasta {grace_deadline.astimezone(timezone.get_current_timezone()).strftime('%H:%M')}."
+        )
+        pickup.save(
+            update_fields=[
+                "pickup_window_start",
+                "pickup_window_end",
+                "pickup_grace_deadline",
+                "pickup_retention_deadline",
+                "pickup_no_show_flag",
+                "no_show_marked_at",
+                "retention_extension_count",
+                "last_retention_extension_at",
+                "pickup_schedule_note",
+                "updated_at",
+            ]
+        )
+        OrderTimelineEvent.objects.create(
+            order=order,
+            event_code="PICKUP_READY_WINDOW_STARTED",
+            event_label="Ventana de retiro iniciada",
+            actor_role="COCINERO",
+            actor_id=str(actor.supabase_user_id),
+            metadata={
+                "pickup_window_start": window_start.isoformat(),
+                "pickup_window_end": window_end.isoformat(),
+                "pickup_grace_deadline": grace_deadline.isoformat(),
+                "pickup_retention_deadline": retention_deadline.isoformat(),
+            },
+        )
+
+    def _sync_pickup_operational_state(self, order: Order):
+        pickup = getattr(order, "pickup_confirmation", None)
+        if not pickup or order.fulfillment_type != Order.FulfillmentType.PICKUP:
+            return
+        if pickup.status != PickupConfirmation.Status.PENDING:
+            return
+        if order.status not in {Order.Status.READY_FOR_PICKUP, Order.Status.EXPIRED}:
+            return
+
+        now = timezone.now()
+        if (
+            not pickup.pickup_no_show_flag
+            and pickup.pickup_grace_deadline
+            and now > pickup.pickup_grace_deadline
+        ):
+            self._mark_pickup_no_show(order, pickup, actor_role="SISTEMA", actor_id="", force_now=False)
+            self.notification_service.notify_pickup_no_show(
+                order,
+                retention_deadline=pickup.pickup_retention_deadline,
+                actor_role="SISTEMA",
+            )
+
+    def _pickup_state_text(self, order: Order, pickup: PickupConfirmation):
+        if pickup.status == PickupConfirmation.Status.CONFIRMED:
+            return "Retiro confirmado", "El pedido fue retirado correctamente."
+        if order.status == Order.Status.EXPIRED:
+            return "Retiro vencido", "La retencion operativa vencio y el pedido fue cerrado por no presentacion."
+        if pickup.pickup_no_show_flag:
+            if pickup.pickup_retention_deadline and timezone.now() > pickup.pickup_retention_deadline:
+                return (
+                    "Retencion vencida",
+                    "La retencion operativa ya vencio y el pedido requiere cierre final por el cocinero.",
+                )
+            retention_until = pickup.pickup_retention_deadline
+            until_label = retention_until.astimezone(timezone.get_current_timezone()).strftime("%H:%M") if retention_until else "-"
+            return (
+                "No presentado",
+                f"El cliente no se presento dentro de la tolerancia. El pedido queda retenido temporalmente hasta {until_label}.",
+            )
+        if pickup.pickup_window_start and pickup.pickup_window_end:
+            grace_label = pickup.pickup_grace_deadline.astimezone(timezone.get_current_timezone()).strftime("%H:%M") if pickup.pickup_grace_deadline else "-"
+            return (
+                "Esperando retiro",
+                f"Retiro esperado dentro de la ventana programada. La tolerancia operativa vence a las {grace_label}.",
+            )
+        return "Programado", "El retiro quedo programado y se habilitara cuando el pedido este listo."
+
+    def _pickup_operational_flags(self, order: Order, pickup: PickupConfirmation | None):
+        if not pickup:
+            return {
+                "pickup_waiting_client": False,
+                "pickup_client_no_show": False,
+                "pickup_retention_active": False,
+                "pickup_retention_expired": False,
+            }
+        now = timezone.now()
+        waiting_client = (
+            order.status == Order.Status.READY_FOR_PICKUP
+            and pickup.status == PickupConfirmation.Status.PENDING
+            and not pickup.pickup_no_show_flag
+        )
+        retention_active = (
+            order.status == Order.Status.READY_FOR_PICKUP
+            and pickup.pickup_no_show_flag
+            and pickup.status == PickupConfirmation.Status.PENDING
+            and (
+                pickup.pickup_retention_deadline is None
+                or now <= pickup.pickup_retention_deadline
+            )
+        )
+        retention_expired = bool(
+            pickup.pickup_no_show_flag
+            and pickup.pickup_retention_deadline
+            and now > pickup.pickup_retention_deadline
+        ) or order.status == Order.Status.EXPIRED
+        return {
+            "pickup_waiting_client": waiting_client,
+            "pickup_client_no_show": bool(pickup.pickup_no_show_flag),
+            "pickup_retention_active": retention_active and not retention_expired,
+            "pickup_retention_expired": retention_expired,
+        }
+
+    def _get_actionable_pickup(self, order: Order, *, sync: bool = True):
+        if sync:
+            self._sync_pickup_operational_state(order)
+        self._assert_status(order, [Order.Status.READY_FOR_PICKUP], "transition_not_allowed", "El pickup no admite esta accion en su estado actual.")
+        if order.fulfillment_type != Order.FulfillmentType.PICKUP:
+            raise OrderCashServiceError("El pedido no corresponde a retiro en punto.", "invalid_fulfillment_type")
+        return self._get_pending_pickup_confirmation(order)
+
+    def _mark_pickup_no_show(self, order: Order, pickup: PickupConfirmation, *, actor_role: str, actor_id: str, force_now: bool):
+        now = timezone.now()
+        if pickup.pickup_no_show_flag:
+            return pickup
+        if not pickup.pickup_window_start:
+            raise OrderCashServiceError("La ventana de retiro aun no esta activa.", "pickup_window_not_started")
+        if not force_now and pickup.pickup_grace_deadline and now <= pickup.pickup_grace_deadline:
+            raise OrderCashServiceError("La tolerancia de retiro aun no vencio.", "pickup_grace_not_expired")
+        if force_now and pickup.pickup_grace_deadline and now < pickup.pickup_grace_deadline:
+            pickup.pickup_grace_deadline = now
+        if not pickup.pickup_retention_deadline or pickup.pickup_retention_deadline <= now:
+            pickup.pickup_retention_deadline = now + timedelta(minutes=self._pickup_retention_minutes())
+        pickup.pickup_no_show_flag = True
+        pickup.no_show_marked_at = now
+        pickup.save(
+            update_fields=[
+                "pickup_grace_deadline",
+                "pickup_retention_deadline",
+                "pickup_no_show_flag",
+                "no_show_marked_at",
+                "updated_at",
+            ]
+        )
+        OrderTimelineEvent.objects.create(
+            order=order,
+            event_code="PICKUP_CLIENT_NO_SHOW",
+            event_label="Cliente no se presento al retiro",
+            actor_role=actor_role,
+            actor_id=actor_id,
+            metadata={
+                "pickup_grace_deadline": pickup.pickup_grace_deadline.isoformat() if pickup.pickup_grace_deadline else "",
+                "pickup_retention_deadline": pickup.pickup_retention_deadline.isoformat() if pickup.pickup_retention_deadline else "",
+            },
+        )
+        return pickup
+
+    def _extend_pickup_retention(self, order: Order, pickup: PickupConfirmation, *, actor_role: str, actor_id: str):
+        now = timezone.now()
+        if not pickup.pickup_no_show_flag:
+            raise OrderCashServiceError("El pedido aun no fue marcado como no presentado.", "pickup_no_show_not_marked")
+        if pickup.pickup_retention_deadline and now > pickup.pickup_retention_deadline:
+            raise OrderCashServiceError("La retencion ya vencio y debe cerrarse.", "pickup_retention_already_expired")
+        if int(pickup.retention_extension_count or 0) >= self._pickup_retention_max_extensions():
+            raise OrderCashServiceError("La retencion ya alcanzo el maximo de extensiones permitidas.", "pickup_retention_extension_limit")
+        base_deadline = pickup.pickup_retention_deadline or now
+        pickup.pickup_retention_deadline = base_deadline + timedelta(minutes=self._pickup_retention_extension_minutes())
+        pickup.retention_extension_count = int(pickup.retention_extension_count or 0) + 1
+        pickup.last_retention_extension_at = now
+        pickup.save(
+            update_fields=[
+                "pickup_retention_deadline",
+                "retention_extension_count",
+                "last_retention_extension_at",
+                "updated_at",
+            ]
+        )
+        OrderTimelineEvent.objects.create(
+            order=order,
+            event_code="PICKUP_RETENTION_EXTENDED",
+            event_label="Retencion de pickup extendida",
+            actor_role=actor_role,
+            actor_id=actor_id,
+            metadata={
+                "retention_extension_count": pickup.retention_extension_count,
+                "pickup_retention_deadline": pickup.pickup_retention_deadline.isoformat() if pickup.pickup_retention_deadline else "",
+            },
+        )
+        return pickup
+
+    def _expire_pickup_retention(self, order: Order, pickup: PickupConfirmation, *, actor_role: str, actor_id: str):
+        now = timezone.now()
+        if not pickup.pickup_no_show_flag:
+            raise OrderCashServiceError("El pedido no tiene una retencion activa por no presentacion.", "pickup_no_show_not_marked")
+        if pickup.pickup_retention_deadline and now < pickup.pickup_retention_deadline:
+            raise OrderCashServiceError("La retencion aun no vence para cerrar el pickup.", "pickup_retention_not_expired")
+        payment = self._latest_payment(order)
+        if payment and payment.status in {OrderPayment.Status.CREATED, OrderPayment.Status.PENDING, OrderPayment.Status.PROCESSING}:
+            payment.status = OrderPayment.Status.CANCELLED
+            payment.failure_reason = "Pickup vencido por no presentacion del cliente"
+            payment.save(update_fields=["status", "failure_reason", "updated_at"])
+        pickup.status = PickupConfirmation.Status.CANCELLED
+        pickup.cancelled_at = now
+        pickup.save(update_fields=["status", "cancelled_at", "updated_at"])
+        order.cancelled_reason = "Retiro no completado dentro de la ventana y retencion."
+        order.cancelled_by_role = actor_role
+        order.save(update_fields=["cancelled_reason", "cancelled_by_role", "updated_at"])
+        self._move_order(
+            order,
+            Order.Status.EXPIRED,
+            actor_role,
+            actor_id,
+            "Pickup vencido por no presentacion del cliente",
+            "PICKUP_RETENTION_EXPIRED",
+            "Retencion de pickup vencida",
+        )
+        return order
 
     def _assert_status(self, order: Order, allowed_statuses: list[str], code: str, message: str):
         if order.status not in allowed_statuses:
