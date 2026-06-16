@@ -10,6 +10,7 @@ from modules.delivery_logistica.models import (
 )
 from modules.gestion_cocinero.models import ChefProfile
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
+from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
 
 from .osm_routing_service import OSMRoutingService
 
@@ -59,6 +60,7 @@ class DeliveryTrackingService:
                 assignment.id,
                 str(assignment.delivery_user.supabase_user_id),
             )
+        publish_order_tracking_refresh(str(assignment.order_id))
         return {
             "assignment_id": assignment.id,
             "location_ping": self._serialize_ping(ping),
@@ -97,6 +99,7 @@ class DeliveryTrackingService:
                 assignment.id,
                 str(assignment.delivery_user.supabase_user_id),
             )
+        publish_order_tracking_refresh(str(assignment.order_id))
         return {
             "assignment_id": assignment.id,
             "route": map_payload.get("route"),

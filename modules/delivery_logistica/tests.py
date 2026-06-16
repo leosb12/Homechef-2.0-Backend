@@ -1,11 +1,18 @@
 from decimal import Decimal
+from datetime import timedelta
 from uuid import uuid4
 
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident, DeliveryLocationPing, DeliveryRouteSnapshot
+from modules.delivery_logistica.models import (
+    DeliveryAssignment,
+    DeliveryAssignmentOffer,
+    DeliveryIncident,
+    DeliveryLocationPing,
+    DeliveryRouteSnapshot,
+)
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, Dish
 from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderAddress, OrderItem, OrderPayment
@@ -64,6 +71,8 @@ class DeliveryLogisticsApiTests(TestCase):
             vehicle_model="FZ",
             vehicle_plate="123-AAA",
             approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
+            availability_manual_status=DeliveryProfile.AvailabilityManualStatus.AVAILABLE,
+            availability_effective_status=DeliveryProfile.AvailabilityEffectiveStatus.AVAILABLE,
         )
         DeliveryProfile.objects.create(
             user=self.other_delivery,
@@ -72,6 +81,8 @@ class DeliveryLogisticsApiTests(TestCase):
             vehicle_model="GN",
             vehicle_plate="456-BBB",
             approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
+            availability_manual_status=DeliveryProfile.AvailabilityManualStatus.AVAILABLE,
+            availability_effective_status=DeliveryProfile.AvailabilityEffectiveStatus.AVAILABLE,
         )
         ChefAvailability.objects.create(
             chef=self.chef_profile,
@@ -105,11 +116,13 @@ class DeliveryLogisticsApiTests(TestCase):
         assignment = DeliveryAssignment.objects.create(order=order)
 
         self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
-        assigned_response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        offers_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(offers_response.status_code, 200)
+        self.assertEqual(len(offers_response.data["items"]), 1)
+        self.assertEqual(offers_response.data["items"][0]["assignment_id"], assignment.id)
+        assigned_response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/accept/", {}, format="json")
         self.assertEqual(assigned_response.status_code, 200)
-        self.assertEqual(len(assigned_response.data["items"]), 1)
-        self.assertEqual(assigned_response.data["items"][0]["status"], DeliveryAssignment.Status.ASSIGNED)
-        self.assertEqual(assigned_response.data["items"][0]["available_actions"], ["picked_up"])
+        self.assertEqual(assigned_response.data["assignment"]["status"], DeliveryAssignment.Status.ASSIGNED)
         assignment.refresh_from_db()
         self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
 
@@ -360,7 +373,143 @@ class DeliveryLogisticsApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
-    def test_delivery_reject_reassigns_to_next_candidate(self):
+    def test_delivery_reject_offer_creates_second_round_instead_of_immediate_reassignment(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        initial_offer_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(initial_offer_response.status_code, 200)
+        self.assertEqual(len(initial_offer_response.data["items"]), 1)
+
+        response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/reject/", {}, format="json")
+        self.assertEqual(response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertIsNone(assignment.delivery_user_id)
+        self.assertEqual(assignment.metadata.get("offer_flow_state"), "WAITING_ROUND_2")
+
+        assignment.metadata = {
+            **(assignment.metadata or {}),
+            "offer_next_round_at": (timezone.now() - timedelta(seconds=1)).isoformat(),
+        }
+        assignment.save(update_fields=["metadata", "updated_at"])
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        second_offer_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(second_offer_response.status_code, 200)
+        self.assertEqual(len(second_offer_response.data["items"]), 1)
+        self.assertEqual(second_offer_response.data["items"][0]["assignment_id"], assignment.id)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        hidden_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(hidden_response.status_code, 200)
+        self.assertEqual(len(hidden_response.data["items"]), 0)
+
+    def test_second_failed_offer_opens_assignment_in_open_board(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        reject_first_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/reject/",
+            {},
+            format="json",
+        )
+        self.assertEqual(reject_first_response.status_code, 200)
+
+        assignment.refresh_from_db()
+        assignment.metadata = {
+            **(assignment.metadata or {}),
+            "offer_next_round_at": (timezone.now() - timedelta(seconds=1)).isoformat(),
+        }
+        assignment.save(update_fields=["metadata", "updated_at"])
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        second_offer_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(second_offer_response.status_code, 200)
+        self.assertEqual(len(second_offer_response.data["items"]), 1)
+
+        reject_second_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/reject/",
+            {},
+            format="json",
+        )
+        self.assertEqual(reject_second_response.status_code, 200)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        open_board_response = self.api.get("/api/v1/logistics/delivery/open-board/")
+        self.assertEqual(open_board_response.status_code, 200)
+        self.assertEqual(len(open_board_response.data["items"]), 1)
+        self.assertEqual(open_board_response.data["items"][0]["id"], assignment.id)
+
+        assignment.refresh_from_db()
+        self.assertTrue((assignment.metadata or {}).get("open_board_enabled"))
+
+    def test_delivery_open_board_is_enabled_after_two_search_rounds_without_candidates(self):
+        delivery_profile = DeliveryProfile.objects.get(user=self.delivery_profile)
+        other_profile = DeliveryProfile.objects.get(user=self.other_delivery)
+        delivery_profile.availability_manual_status = DeliveryProfile.AvailabilityManualStatus.OFF_DUTY
+        delivery_profile.availability_effective_status = DeliveryProfile.AvailabilityEffectiveStatus.OFF_DUTY
+        delivery_profile.save(update_fields=["availability_manual_status", "availability_effective_status", "updated_at"])
+        other_profile.availability_manual_status = DeliveryProfile.AvailabilityManualStatus.OFF_DUTY
+        other_profile.availability_effective_status = DeliveryProfile.AvailabilityEffectiveStatus.OFF_DUTY
+        other_profile.save(update_fields=["availability_manual_status", "availability_effective_status", "updated_at"])
+
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        first_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(len(first_response.data["items"]), 0)
+
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.metadata.get("no_candidate_attempt_count"), 1)
+        assignment.metadata = {
+            **(assignment.metadata or {}),
+            "offer_next_round_at": (timezone.now() - timedelta(seconds=1)).isoformat(),
+        }
+        assignment.save(update_fields=["metadata", "updated_at"])
+
+        open_board_response = self.api.get("/api/v1/logistics/delivery/open-board/")
+        self.assertEqual(open_board_response.status_code, 200)
+        self.assertEqual(len(open_board_response.data["items"]), 1)
+        self.assertEqual(open_board_response.data["items"][0]["id"], assignment.id)
+
+    def test_open_board_claim_is_granted_only_to_first_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(
+            order=order,
+            metadata={
+                "offer_flow_state": "OPEN_BOARD",
+                "open_board_enabled": True,
+                "open_board_enabled_at": timezone.now().isoformat(),
+                "open_board_reason": "test",
+            },
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        claim_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/claim/",
+            {},
+            format="json",
+        )
+        self.assertEqual(claim_response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
+        self.assertEqual(assignment.status, DeliveryAssignment.Status.ASSIGNED)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        second_claim_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/claim/",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_claim_response.status_code, 409)
+        self.assertEqual(second_claim_response.data["code"], "assignment_already_taken")
+
+    def test_cancel_assigned_delivery_moves_assignment_back_to_open_board(self):
         order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
         assignment = DeliveryAssignment.objects.create(
             order=order,
@@ -371,23 +520,53 @@ class DeliveryLogisticsApiTests(TestCase):
         )
 
         self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
-        response = self.api.post(f"/api/v1/logistics/delivery/{assignment.id}/reject/", {}, format="json")
-        self.assertEqual(response.status_code, 200)
+        cancel_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/cancel/",
+            {},
+            format="json",
+        )
+        self.assertEqual(cancel_response.status_code, 200)
+
         assignment.refresh_from_db()
-        self.assertEqual(assignment.delivery_user_id, self.other_delivery.id)
-        self.assertEqual(response.data["reassigned_to"]["id"], str(self.other_delivery.supabase_user_id))
+        self.assertIsNone(assignment.delivery_user_id)
+        self.assertEqual(assignment.status, DeliveryAssignment.Status.UNASSIGNED)
+        self.assertTrue((assignment.metadata or {}).get("open_board_enabled"))
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        open_board_response = self.api.get("/api/v1/logistics/delivery/open-board/")
+        self.assertEqual(open_board_response.status_code, 200)
+        self.assertEqual(len(open_board_response.data["items"]), 1)
+        self.assertEqual(open_board_response.data["items"][0]["id"], assignment.id)
+
+    def test_cancel_is_rejected_after_arriving_to_chef(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(
+            order=order,
+            status=DeliveryAssignment.Status.AT_CHEF,
+            delivery_user=self.delivery_profile,
+            assigned_at=timezone.now(),
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/cancel/",
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "assignment_cancel_not_allowed")
 
     def test_only_nearest_driver_sees_auto_assigned_delivery(self):
         order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
         DeliveryAssignment.objects.create(order=order)
 
         self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
-        primary_response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        primary_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
         self.assertEqual(primary_response.status_code, 200)
         self.assertEqual(len(primary_response.data["items"]), 1)
 
         self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
-        secondary_response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        secondary_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
         self.assertEqual(secondary_response.status_code, 200)
         self.assertEqual(len(secondary_response.data["items"]), 0)
 
@@ -398,9 +577,155 @@ class DeliveryLogisticsApiTests(TestCase):
         DeliveryAssignment.objects.create(order=order)
 
         self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
-        response = self.api.get("/api/v1/logistics/delivery/assigned/")
+        response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data["items"]), 0)
+
+    def test_delivery_availability_can_toggle_manual_and_effective_status(self):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        initial_response = self.api.get("/api/v1/logistics/delivery/availability/")
+        self.assertEqual(initial_response.status_code, 200)
+        self.assertEqual(initial_response.data["manual_status"], "DISPONIBLE")
+        self.assertEqual(initial_response.data["effective_status"], "DISPONIBLE")
+
+        update_response = self.api.post(
+            "/api/v1/logistics/delivery/availability/",
+            {"manual_status": "FUERA_DE_SERVICIO"},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.data["manual_status"], "FUERA_DE_SERVICIO")
+        self.assertEqual(update_response.data["effective_status"], "FUERA_DE_SERVICIO")
+        follow_up_response = self.api.get("/api/v1/logistics/delivery/availability/")
+        self.assertEqual(follow_up_response.status_code, 200)
+        self.assertEqual(follow_up_response.data["manual_status"], "FUERA_DE_SERVICIO")
+        self.assertEqual(follow_up_response.data["effective_status"], "FUERA_DE_SERVICIO")
+
+        second_update_response = self.api.post(
+            "/api/v1/logistics/delivery/availability/",
+            {"manual_status": "DISPONIBLE"},
+            format="json",
+        )
+        self.assertEqual(second_update_response.status_code, 200)
+        self.assertEqual(second_update_response.data["manual_status"], "DISPONIBLE")
+        self.assertEqual(second_update_response.data["effective_status"], "DISPONIBLE")
+        second_follow_up_response = self.api.get("/api/v1/logistics/delivery/availability/")
+        self.assertEqual(second_follow_up_response.status_code, 200)
+        self.assertEqual(second_follow_up_response.data["manual_status"], "DISPONIBLE")
+        self.assertEqual(second_follow_up_response.data["effective_status"], "DISPONIBLE")
+
+    def test_delivery_effective_status_turns_busy_at_capacity_limit(self):
+        first = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        second = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        third = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        DeliveryAssignment.objects.create(order=first, status=DeliveryAssignment.Status.ASSIGNED, delivery_user=self.delivery_profile)
+        DeliveryAssignment.objects.create(order=second, status=DeliveryAssignment.Status.AT_CHEF, delivery_user=self.delivery_profile)
+        DeliveryAssignment.objects.create(order=third, status=DeliveryAssignment.Status.PICKED_UP, delivery_user=self.delivery_profile)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        response = self.api.get("/api/v1/logistics/delivery/availability/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["active_assignments_count"], 3)
+        self.assertEqual(response.data["effective_status"], "OCUPADO")
+
+    def test_pending_offer_visibility_is_exclusive_and_accept_assigns_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        offers_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(offers_response.status_code, 200)
+        self.assertEqual(len(offers_response.data["items"]), 1)
+        self.assertEqual(offers_response.data["items"][0]["assignment_id"], assignment.id)
+        offer = DeliveryAssignmentOffer.objects.get(assignment=assignment)
+        self.assertEqual(offer.delivery_user_id, self.delivery_profile.id)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.other_delivery))
+        hidden_response = self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        self.assertEqual(hidden_response.status_code, 200)
+        self.assertEqual(len(hidden_response.data["items"]), 0)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        accept_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/accept/",
+            {},
+            format="json",
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        assignment.refresh_from_db()
+        offer.refresh_from_db()
+        self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
+        self.assertEqual(offer.status, DeliveryAssignmentOffer.Status.ACCEPTED)
+        self.assertTrue((assignment.metadata or {}).get("flow_audit"))
+
+    def test_accept_offer_is_idempotent_for_same_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        first_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/accept/",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        second_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/accept/",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.delivery_user_id, self.delivery_profile.id)
+
+    def test_reject_offer_is_idempotent_after_first_rejection(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(order=order)
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        self.api.get("/api/v1/logistics/delivery/offers/pending/")
+        first_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/reject/",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        second_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/reject/",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        self.assertIn("descartada", second_response.data["message"].lower())
+
+    def test_cancel_to_open_board_is_idempotent_for_same_delivery(self):
+        order = self._create_delivery_order(payment_method=Order.PaymentMethod.CASH)
+        assignment = DeliveryAssignment.objects.create(
+            order=order,
+            status=DeliveryAssignment.Status.ASSIGNED,
+            delivery_user=self.delivery_profile,
+            assigned_at=timezone.now(),
+        )
+
+        self.api.force_authenticate(user=AuthenticatedProfile(self.delivery_profile))
+        first_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/cancel/",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        second_response = self.api.post(
+            f"/api/v1/logistics/delivery/{assignment.id}/cancel/",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        assignment.refresh_from_db()
+        self.assertIsNone(assignment.delivery_user_id)
+        self.assertTrue((assignment.metadata or {}).get("open_board_enabled"))
 
     def _create_delivery_order(self, payment_method: str):
         order = Order.objects.create(

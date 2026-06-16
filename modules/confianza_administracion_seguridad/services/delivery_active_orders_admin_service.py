@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from modules.delivery_logistica.services.delivery_assignment_engine import DeliveryAssignmentEngine
+from modules.delivery_logistica.services.delivery_offer_service import DeliveryOfferService
 from modules.delivery_logistica.services.delivery_tracking_service import DeliveryTrackingService
 from modules.gestion_cocinero.models import ChefProfile
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
@@ -22,12 +22,12 @@ class DeliveryActiveOrdersAdminService:
     }
 
     def __init__(self):
-        self.assignment_engine = DeliveryAssignmentEngine()
+        self.offer_service = DeliveryOfferService()
         self.tracking_service = DeliveryTrackingService()
 
     def list_active_orders(self, actor_user_id: str):
         self._require_admin(actor_user_id)
-        self.assignment_engine.sync_open_assignments()
+        self.offer_service.sync_open_assignments()
         queryset = (
             Order.objects.filter(
                 fulfillment_type=Order.FulfillmentType.DELIVERY,
@@ -70,11 +70,9 @@ class DeliveryActiveOrdersAdminService:
         if not order:
             raise DeliveryActiveOrdersAdminError("order_not_found", "Pedido delivery activo no encontrado.")
         if getattr(order, "delivery_assignment", None):
-            self.assignment_engine.ensure_assignment_up_to_date(
+            self.offer_service.ensure_offer_up_to_date(
                 order.delivery_assignment,
                 reason="admin_detail_sync",
-                actor_role="SISTEMA",
-                actor_id="",
             )
             order.refresh_from_db()
         return {"order": self._serialize_detail(order)}
@@ -102,6 +100,8 @@ class DeliveryActiveOrdersAdminService:
                 "estimated_distance_human": context["estimated_distance_human"],
                 "attempt_count": context["attempt_count"],
                 "strategy": context["strategy"],
+                "flow_state": context["flow_state"],
+                "open_board_enabled": context["open_board_enabled"],
             },
         }
 
@@ -180,7 +180,13 @@ class DeliveryActiveOrdersAdminService:
             "last_attempt_at": metadata.get("assignment_last_attempt_at"),
             "strategy": metadata.get("assignment_strategy", ""),
             "candidate_snapshot": metadata.get("candidate_snapshot") or [],
-            "reassignment_history": metadata.get("reassignment_history") or [],
+            "flow_state": metadata.get("offer_flow_state", ""),
+            "flow_audit": metadata.get("flow_audit") or [],
+            "pending_delivery_name": metadata.get("offer_pending_delivery_name", ""),
+            "pending_expires_at": metadata.get("offer_pending_expires_at"),
+            "open_board_enabled": bool(metadata.get("open_board_enabled")),
+            "open_board_enabled_at": metadata.get("open_board_enabled_at"),
+            "open_board_reason": metadata.get("open_board_reason", ""),
             "estimated_distance_meters": float(estimated_distance_meters) if estimated_distance_meters is not None else None,
             "estimated_distance_human": estimated_distance_human,
             "last_result": metadata.get("assignment_last_result", ""),

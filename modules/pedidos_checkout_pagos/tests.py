@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from modules.confianza_administracion_seguridad.models import OperationalNotification
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident, DeliveryRouteSnapshot, DeliveryStatusHistory
 from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, DailyMenu, DailyMenuItem, Dish
-from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
+from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 from modules.pedidos_checkout_pagos.models import (
     Cart,
     CartItem,
@@ -226,6 +226,18 @@ class CartServiceAndApiTests(TestCase):
             role=UserProfile.ROLE_DELIVERY,
             first_name="Rider",
             is_active=True,
+            location_latitude=-17.782,
+            location_longitude=-63.182,
+        )
+        DeliveryProfile.objects.create(
+            user=self.delivery_profile,
+            vehicle_type=DeliveryProfile.VehicleType.MOTORCYCLE,
+            vehicle_brand="Honda",
+            vehicle_model="Wave",
+            vehicle_plate="789-CCC",
+            approval_status=DeliveryProfile.ApprovalStatus.ACTIVE,
+            availability_manual_status=DeliveryProfile.AvailabilityManualStatus.AVAILABLE,
+            availability_effective_status=DeliveryProfile.AvailabilityEffectiveStatus.AVAILABLE,
         )
         self.second_chef = UserProfile.objects.create(
             supabase_user_id=uuid4(),

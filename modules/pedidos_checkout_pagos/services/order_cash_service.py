@@ -23,6 +23,7 @@ from modules.pedidos_checkout_pagos.models import (
 )
 from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
+from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
 
 
 class OrderCashServiceError(ValueError):
@@ -923,6 +924,7 @@ class OrderCashService:
             metadata={"from_status": from_status, "to_status": to_status},
         )
         order.refresh_from_db()
+        self._publish_tracking(order)
 
     def _confirm_payment(self, payment: OrderPayment, actor: UserProfile, actor_role: str, metadata: dict):
         payment.status = OrderPayment.Status.CONFIRMED
@@ -953,6 +955,7 @@ class OrderCashService:
             actor_id=str(actor.supabase_user_id),
             metadata=metadata,
         )
+        self._publish_tracking(payment.order)
 
     def _confirm_pickup_confirmation(self, pickup: PickupConfirmation, actor: UserProfile, actor_role: str):
         pickup.status = PickupConfirmation.Status.CONFIRMED
@@ -968,6 +971,7 @@ class OrderCashService:
             actor_id=str(actor.supabase_user_id),
             metadata={"pickup_code": pickup.pickup_code},
         )
+        self._publish_tracking(pickup.order)
 
     def _start_pickup_window(self, order: Order, actor: UserProfile):
         pickup = getattr(order, "pickup_confirmation", None)
@@ -1020,6 +1024,7 @@ class OrderCashService:
                 "pickup_retention_deadline": retention_deadline.isoformat(),
             },
         )
+        self._publish_tracking(order)
 
     def _sync_pickup_operational_state(self, order: Order):
         pickup = getattr(order, "pickup_confirmation", None)
@@ -1145,6 +1150,7 @@ class OrderCashService:
                 "pickup_retention_deadline": pickup.pickup_retention_deadline.isoformat() if pickup.pickup_retention_deadline else "",
             },
         )
+        self._publish_tracking(order)
         return pickup
 
     def _extend_pickup_retention(self, order: Order, pickup: PickupConfirmation, *, actor_role: str, actor_id: str):
@@ -1178,6 +1184,7 @@ class OrderCashService:
                 "pickup_retention_deadline": pickup.pickup_retention_deadline.isoformat() if pickup.pickup_retention_deadline else "",
             },
         )
+        self._publish_tracking(order)
         return pickup
 
     def _expire_pickup_retention(self, order: Order, pickup: PickupConfirmation, *, actor_role: str, actor_id: str):
@@ -1207,6 +1214,11 @@ class OrderCashService:
             "Retencion de pickup vencida",
         )
         return order
+
+    def _publish_tracking(self, order: Order | None):
+        if not order:
+            return
+        publish_order_tracking_refresh(str(order.id))
 
     def _assert_status(self, order: Order, allowed_statuses: list[str], code: str, message: str):
         if order.status not in allowed_statuses:
