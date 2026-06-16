@@ -95,11 +95,18 @@ class AuthService:
             "redirect_path": ROLE_REDIRECTS.get(role, "/"),
         }
 
-    def session(self, user):
+    def session(self, user, fcm_token=None):
         role = user.role
         if not role or role not in ROLE_REDIRECTS:
             self.profile_repo.log_event("login_role_config_error", {"user_id": user.id, "role": role})
             raise LookupError("Rol sin configuracion de acceso.")
+        
+        if fcm_token:
+            profile = self.user_repo.find_raw_by_email(user.email)
+            if profile:
+                profile.fcm_token = fcm_token
+                profile.save(update_fields=['fcm_token'])
+            
         self.profile_repo.log_event("login_success", {"user_id": user.id, "role": role})
         return {
             "role": role,
