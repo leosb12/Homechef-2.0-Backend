@@ -96,6 +96,7 @@ class RegisterSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
+    fcm_token = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class RecoverPasswordRequestSerializer(serializers.Serializer):

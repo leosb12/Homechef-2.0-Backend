@@ -136,3 +136,5 @@ class DailyMenuItem(models.Model):
 
     def __str__(self):
         return f"{self.dish.name} in {self.menu_id}"
+
+from .inventory import InventoryItem, DishIngredient, StockMovement

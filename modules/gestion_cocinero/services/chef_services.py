@@ -134,7 +134,7 @@ class ChefServices:
             raise ValueError("Precio invalido.")
         if portions <= 0:
             raise ValueError("Porciones invalidas.")
-        payload["ingredients"] = self._clean_list(payload.get("ingredients", []))
+        payload["ingredients"] = self._clean_ingredients(payload.get("ingredients", []))
         payload["tags"] = self._clean_list(payload.get("tags", []))
         payload["allergens"] = self._clean_list(payload.get("allergens", []))
         if not payload["ingredients"]:
@@ -169,6 +169,36 @@ class ChefServices:
         if not isinstance(raw_value, list):
             return []
         return [str(item).strip() for item in raw_value if str(item).strip()]
+
+    def _clean_ingredients(self, raw_value):
+        if not isinstance(raw_value, list):
+            return []
+        cleaned = []
+        seen_names = set()
+        for item in raw_value:
+            if isinstance(item, dict):
+                name = str(item.get("name", "")).strip()
+                if name:
+                    if name.lower() in seen_names:
+                        raise ValueError(f"El ingrediente '{name}' está duplicado en la receta.")
+                    seen_names.add(name.lower())
+                    cleaned.append({
+                        "name": name,
+                        "quantity": float(item.get("quantity", 1)),
+                        "unit": str(item.get("unit", "u")).strip()
+                    })
+            elif isinstance(item, str):
+                if item.strip():
+                    name = item.strip()
+                    if name.lower() in seen_names:
+                        raise ValueError(f"El ingrediente '{name}' está duplicado en la receta.")
+                    seen_names.add(name.lower())
+                    cleaned.append({
+                        "name": name,
+                        "quantity": 1,
+                        "unit": "u"
+                    })
+        return cleaned
 
     # CU-16
     def get_daily_menu(self, chef_id: str):

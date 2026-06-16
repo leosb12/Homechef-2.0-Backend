@@ -23,6 +23,7 @@ class UserProfile(models.Model):
     avatar_url = models.URLField(max_length=1000, blank=True)
     role = models.CharField(max_length=30, choices=ROLE_CHOICES, default=ROLE_CLIENT)
     phone = models.CharField(max_length=30, blank=True)
+    fcm_token = models.CharField(max_length=255, blank=True, null=True)
     address = models.CharField(max_length=255, blank=True)
     location_latitude = models.FloatField(null=True, blank=True)
     location_longitude = models.FloatField(null=True, blank=True)

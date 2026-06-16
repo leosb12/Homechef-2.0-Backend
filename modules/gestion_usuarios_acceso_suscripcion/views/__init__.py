@@ -51,7 +51,8 @@ def register_view(request):
 @permission_classes([IsAuthenticated])
 def login_view(request):
     try:
-        result = AuthService().session(request.user)
+        fcm_token = request.data.get('fcm_token')
+        result = AuthService().session(request.user, fcm_token=fcm_token)
         return Response(result, status=status.HTTP_200_OK)
     except LookupError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -77,8 +78,8 @@ def session_view(request):
                 "role": None,
                 "redirect_path": "/register"
             }, status=status.HTTP_200_OK)
-        
-        result = AuthService().session(request.user)
+        fcm_token = request.data.get('fcm_token') if request.method == 'POST' else None
+        result = AuthService().session(request.user, fcm_token=fcm_token)
         return Response(result, status=status.HTTP_200_OK)
     except LookupError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
