@@ -213,3 +213,20 @@ def create_dish_review(request, dish_id: str):
         return Response({"detail": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception:
         return Response({"detail": "Error temporal al registrar reseña."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+@api_view(["PUT", "DELETE"])
+@permission_classes([IsAuthenticated, IsClienteRole])
+def review_detail_view(request, review_id: str):
+    try:
+        service = ReputationService()
+        if request.method == "PUT":
+            review = service.update_review(request.user.id, review_id, request.data)
+            return Response(review, status=status.HTTP_200_OK)
+        elif request.method == "DELETE":
+            service.delete_review(request.user.id, review_id)
+            return Response({"message": "Reseña eliminada correctamente."}, status=status.HTTP_200_OK)
+    except ValueError as ex:
+        return Response({"detail": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response({"detail": "Error temporal al procesar la reseña."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
