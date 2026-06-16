@@ -24,6 +24,7 @@ from modules.pedidos_checkout_pagos.models import (
 from modules.pedidos_checkout_pagos.services.order_receipt_service import OrderReceiptService
 from modules.pedidos_checkout_pagos.services.stock_service import DishStockService
 from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
+from modules.gestion_cocinero.services.inventory_service import InventoryService
 
 
 class OrderCashServiceError(ValueError):
@@ -224,6 +225,13 @@ class OrderCashService:
         order = self._get_order_for_chef(chef, order_id, lock=True)
         self._assert_status(order, [Order.Status.ACCEPTED], "transition_not_allowed", "El pedido no puede pasar a preparacion en su estado actual.")
         self._move_order(order, Order.Status.PREPARING, "COCINERO", str(chef.supabase_user_id), "Pedido en preparacion", "ORDER_PREPARING", "Pedido en preparacion")
+        
+        try:
+            order_items_payload = [{"dish_id": str(item.dish_id), "portions": item.quantity} for item in order.items.all()]
+            InventoryService().deduct_stock_from_order(str(order.id), order_items_payload)
+        except Exception:
+            pass
+            
         self.delivery_service.sync_assignment_for_order_status(
             order,
             actor_role="COCINERO",

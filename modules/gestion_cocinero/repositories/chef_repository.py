@@ -144,6 +144,7 @@ class ChefRepository:
         dish = Dish.objects.filter(id=dish_id, chef=user, deleted_at__isnull=True).first()
         return self._dish_to_dict(dish) if dish else None
 
+    @transaction.atomic
     def save_dish(self, chef_id: str, payload: dict):
         user = self._require_user(chef_id)
         dish_id = payload.get("_id") or payload.get("id") or str(uuid4())
@@ -170,6 +171,45 @@ class ChefRepository:
                 "version": (current.version + 1) if current else 1,
             },
         )
+        
+        # Sincronización Automática con Inventario
+        from modules.gestion_cocinero.models import InventoryItem, DishIngredient
+        
+        # Eliminar las recetas anteriores del plato (se sobreescriben)
+        DishIngredient.objects.filter(dish=dish).delete()
+        
+        for ing in payload.get("ingredients", []):
+            if isinstance(ing, dict):
+                name = ing.get("name")
+                quantity = ing.get("quantity", 1)
+                unit = ing.get("unit", "u")
+                
+                # Buscar o crear el Insumo en el inventario del cocinero
+                inventory_item, created = InventoryItem.objects.get_or_create(
+                    chef=user,
+                    name=name,
+                    defaults={
+                        "unit_of_measure": unit,
+                        "current_stock": 0.0,
+                        "low_stock_threshold": 0.0,
+                        "is_active": True
+                    }
+                )
+                
+                if not created and inventory_item.unit_of_measure != unit:
+                    raise ValueError(
+                        f"Conflicto de unidades: El insumo '{name}' ya existe en tu inventario "
+                        f"medido en '{inventory_item.unit_of_measure}'. Tu receta intentó usar '{unit}'. "
+                        f"Por favor ajusta la receta para usar la misma unidad."
+                    )
+                
+                # Crear la relación matemática Receta
+                DishIngredient.objects.create(
+                    dish=dish,
+                    inventory_item=inventory_item,
+                    quantity_required=quantity
+                )
+
         return self._dish_to_dict(dish)
 
     def update_dish_status(self, chef_id: str, dish_id: str, status: str):
@@ -203,18 +243,61 @@ class ChefRepository:
     @transaction.atomic
     def save_daily_menu(self, chef_id: str, payload: dict):
         user = self._require_user(chef_id)
+        is_active = bool(payload.get("is_active", False))
+        items_payload = payload.get("items", [])
+        
+        # Validar Inventario si el chef intenta Habilitar el Menú
+        if is_active:
+            from modules.gestion_cocinero.models import DishIngredient
+            
+            required_inventory = {}
+            # 1. Calcular demanda total iterando platos configurados
+            for item in items_payload:
+                dish_id = str(item.get("dish_id") or item.get("id") or "")
+                portions = int(item.get("portions", 0))
+                
+                # Solo sumar si el plato está activo/disponible para la venta
+                status = str(item.get("status", "available"))
+                if portions <= 0 or status != "available":
+                    continue
+                    
+                recipes = DishIngredient.objects.filter(dish_id=dish_id).select_related("inventory_item")
+                for recipe in recipes:
+                    inv_item = recipe.inventory_item
+                    needed = float(recipe.quantity_required) * portions
+                    if inv_item not in required_inventory:
+                        required_inventory[inv_item] = 0.0
+                    required_inventory[inv_item] += needed
+            
+            # 2. Verificar contra stock actual
+            missing_alerts = []
+            for inv_item, needed in required_inventory.items():
+                current = float(inv_item.current_stock)
+                if current < needed:
+                    shortfall = needed - current
+                    pretty_name = inv_item.name.replace("_", " ").title()
+                    missing_alerts.append(f"{pretty_name}: Faltan {shortfall:.2f} {inv_item.unit_of_measure} (Tienes {current:.2f}, necesitas {needed:.2f})")
+            
+            # 3. Bloquear publicación si hay faltantes
+            if missing_alerts:
+                missing_str = " | ".join(missing_alerts)
+                raise ValueError(
+                    f"No puedes habilitar el Menú. Faltan insumos en tu inventario para cubrir las porciones: {missing_str}. "
+                    f"Por favor, ajusta las porciones o registra más stock."
+                )
+
         current = DailyMenu.objects.filter(chef=user).first()
         menu, _ = DailyMenu.objects.update_or_create(
             chef=user,
             defaults={
                 "schedule": str(payload.get("schedule", "")).strip(),
-                "is_active": bool(payload.get("is_active", False)),
+                "is_active": is_active,
                 "deleted_at": None,
                 "version": (current.version + 1) if current else 1,
             },
         )
         menu.items.all().delete()
-        for index, item in enumerate(payload.get("items", [])):
+        for index, item in enumerate(items_payload):
             dish_id = str(item.get("dish_id") or item.get("id") or "")
             dish = Dish.objects.filter(id=dish_id, chef=user).first()
             if not dish:

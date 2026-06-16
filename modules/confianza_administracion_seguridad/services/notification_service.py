@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Iterable
 from uuid import UUID
 
@@ -443,6 +444,34 @@ class NotificationService:
             )
         self._notify_many(recipients)
 
+    def notify_low_stock(self, chef_user: UserProfile, item):
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.INVENTORY,
+                    event_code="LOW_STOCK",
+                    title="Stock bajo de insumo",
+                    message=f"El insumo '{item.name}' tiene un nivel de stock ({item.current_stock} {item.unit_of_measure}) igual o menor al minimo ({item.low_stock_threshold}).",
+                    metadata={"item_id": str(item.id)},
+                )
+            ]
+        )
+
+    def notify_expiration(self, chef_user: UserProfile, item, days_left: int):
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.INVENTORY,
+                    event_code="EXPIRATION_WARNING",
+                    title="Insumo por caducar",
+                    message=f"El insumo '{item.name}' caducara en {days_left} dia(s).",
+                    metadata={"item_id": str(item.id)},
+                )
+            ]
+        )
+
     def _notify_many(self, notifications: Iterable[dict | None]):
         payloads = [row for row in notifications if row and row.get("recipient")]
         for payload in payloads:
@@ -510,6 +539,9 @@ class NotificationService:
             return "", f"/delivery/detail?id={assignment.id}"
         if role == UserProfile.ROLE_DELIVERY and order:
             return "", "/delivery/assigned"
+        # Para cocineros, si no hay pedido/asignacion asumimos que es una notificacion de inventario u otra generica
+        if role == UserProfile.ROLE_CHEF and not order and not assignment:
+            return "/chef/inventory", "/chef/inventory"
         return "", ""
 
     def _send_push_if_possible(self, notification: OperationalNotification):
@@ -521,7 +553,12 @@ class NotificationService:
         tokens = list(
             NotificationDeviceToken.objects.filter(user=notification.recipient, is_active=True).order_by("-last_seen_at")
         )
-        if not tokens:
+        token_strings = [t.token for t in tokens]
+        
+        if getattr(notification.recipient, "fcm_token", None) and notification.recipient.fcm_token not in token_strings:
+            token_strings.append(notification.recipient.fcm_token)
+
+        if not token_strings:
             return
         data = {key: str(value) for key, value in (notification.metadata or {}).items()}
         data.update(
@@ -537,10 +574,10 @@ class NotificationService:
             }
         )
         web_link = self._resolve_public_web_link(notification.action_web_path)
-        for token in tokens:
+        for token_string in token_strings:
             try:
                 message = messaging.Message(
-                    token=token.token,
+                    token=token_string,
                     notification=messaging.Notification(
                         title=notification.title,
                         body=notification.message,
@@ -549,13 +586,16 @@ class NotificationService:
                     webpush=messaging.WebpushConfig(
                         fcm_options=messaging.WebpushFCMOptions(link=web_link) if web_link else None,
                     )
-                    if token.platform == NotificationDeviceToken.Platform.WEB
+                    if token_string in [t.token for t in tokens if getattr(t, 'platform', None) == getattr(NotificationDeviceToken, 'Platform', None) and t.platform == getattr(NotificationDeviceToken.Platform, 'WEB', None)]
                     else None,
                 )
                 messaging.send(message, app=app)
             except Exception:
-                token.is_active = False
-                token.save(update_fields=["is_active", "updated_at", "last_seen_at"])
+                # Si falla, podemos buscar el token en NotificationDeviceToken para desactivarlo
+                device_token = next((t for t in tokens if t.token == token_string), None)
+                if device_token:
+                    device_token.is_active = False
+                    device_token.save(update_fields=["is_active", "updated_at", "last_seen_at"])
 
     def _get_firebase_app(self):
         if not firebase_admin or not credentials:
@@ -563,17 +603,35 @@ class NotificationService:
         existing_apps = getattr(firebase_admin, "_apps", {})
         if existing_apps:
             return firebase_admin.get_app()
-        raw_json = str(getattr(settings, "FIREBASE_SERVICE_ACCOUNT_JSON", "") or "").strip()
-        if not raw_json:
+
+        private_key = os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n")
+        project_id = os.getenv("FIREBASE_PROJECT_ID", "")
+        client_email = os.getenv("FIREBASE_CLIENT_EMAIL", "")
+
+        if not private_key or not project_id or not client_email:
             return None
+
+        cert = {
+            "type": "service_account",
+            "project_id": project_id,
+            "private_key_id": "",
+            "private_key": private_key,
+            "client_email": client_email,
+            "client_id": "",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace('@', '%40')}"
+        }
+
         try:
-            payload = json.loads(raw_json)
-        except json.JSONDecodeError:
+            return firebase_admin.initialize_app(
+                credentials.Certificate(cert),
+                options={"projectId": project_id},
+            )
+        except Exception as e:
+            print(f"Firebase init error: {e}")
             return None
-        return firebase_admin.initialize_app(
-            credentials.Certificate(payload),
-            options={"projectId": getattr(settings, "FIREBASE_PROJECT_ID", "") or payload.get("project_id", "")},
-        )
 
     def _resolve_public_web_link(self, action_web_path: str):
         base = str(getattr(settings, "FRONTEND_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
