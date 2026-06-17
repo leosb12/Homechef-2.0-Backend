@@ -16,6 +16,7 @@ class OperationalNotification(models.Model):
         DELIVERY = "DELIVERY", "Delivery"
         INCIDENT = "INCIDENT", "Incidencia"
         INVENTORY = "INVENTORY", "Inventario"
+        ADMINISTRATIVE = "ADMINISTRATIVE", "Administrativa"
 
     id = models.CharField(max_length=64, primary_key=True, default=uuid4_string, editable=False)
     recipient = models.ForeignKey(
