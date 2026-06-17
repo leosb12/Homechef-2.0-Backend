@@ -32,3 +32,12 @@ class DeliveryIncidentCreateSerializer(serializers.Serializer):
 
 class DeliveryIncidentResolveSerializer(serializers.Serializer):
     resolution_notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+
+class DeliveryAvailabilityUpdateSerializer(serializers.Serializer):
+    manual_status = serializers.ChoiceField(
+        choices=[
+            "DISPONIBLE",
+            "FUERA_DE_SERVICIO",
+        ]
+    )

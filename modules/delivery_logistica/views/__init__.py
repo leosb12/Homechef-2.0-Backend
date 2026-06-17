@@ -6,7 +6,10 @@ from rest_framework.response import Response
 from modules.pedidos_checkout_pagos.permissions import IsDeliveryRole
 from ..serializers import DeliveryLocationPingSerializer
 from ..serializers import DeliveryIncidentCreateSerializer, DeliveryIncidentResolveSerializer
+from ..serializers import DeliveryAvailabilityUpdateSerializer
+from ..services.delivery_availability_service import DeliveryAvailabilityError, DeliveryAvailabilityService
 from ..services.delivery_incident_service import DeliveryIncidentError, DeliveryIncidentService
+from ..services.delivery_offer_service import DeliveryOfferError, DeliveryOfferService
 from ..services.delivery_operations_service import (
     DeliveryLogisticsError,
     DeliveryOperationsService,
@@ -42,6 +45,51 @@ def delivery_active_view(request):
         return Response(_error_body(exc), status=_error_status(exc.code))
 
 
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_availability_view(request):
+    service = DeliveryAvailabilityService()
+    if request.method == "GET":
+        try:
+            payload = service.get_status(request.user.id)
+            return Response(payload, status=status.HTTP_200_OK)
+        except DeliveryAvailabilityError as exc:
+            return Response(_error_body(exc), status=_error_status(exc.code))
+
+    serializer = DeliveryAvailabilityUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        payload = service.update_manual_status(
+            request.user.id,
+            serializer.validated_data["manual_status"],
+        )
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryAvailabilityError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_pending_offers_view(request):
+    try:
+        payload = DeliveryOfferService().list_pending_for_delivery(request.user.id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryOfferError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_open_board_view(request):
+    try:
+        payload = DeliveryOperationsService().list_open_board(request.user.id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryLogisticsError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+    except DeliveryOfferError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsDeliveryRole])
 def delivery_detail_view(request, assignment_id: str):
@@ -64,11 +112,37 @@ def delivery_accept_view(request, assignment_id: str):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_claim_view(request, assignment_id: str):
+    try:
+        payload = DeliveryOperationsService().claim_open_board_assignment(request.user.id, assignment_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryLogisticsError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+    except DeliveryOfferError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
 def delivery_reject_view(request, assignment_id: str):
     try:
         payload = DeliveryOperationsService().reject_assignment(request.user.id, assignment_id)
         return Response(payload, status=status.HTTP_200_OK)
     except DeliveryLogisticsError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+    except DeliveryOfferError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDeliveryRole])
+def delivery_cancel_view(request, assignment_id: str):
+    try:
+        payload = DeliveryOperationsService().cancel_assignment(request.user.id, assignment_id)
+        return Response(payload, status=status.HTTP_200_OK)
+    except DeliveryLogisticsError as exc:
+        return Response(_error_body(exc), status=_error_status(exc.code))
+    except DeliveryOfferError as exc:
         return Response(_error_body(exc), status=_error_status(exc.code))
 
 
@@ -196,13 +270,20 @@ def _error_status(code: str):
         return status.HTTP_404_NOT_FOUND
     if code in {
         "assignment_already_taken",
+        "assignment_offer_reserved",
+        "assignment_not_open_board",
         "transition_not_allowed",
         "delivery_not_owner",
         "assignment_reassigned",
+        "assignment_cancel_not_allowed",
+        "offer_not_available",
         "order_not_ready_for_delivery",
         "assignment_tracking_closed",
         "incident_transition_not_allowed",
         "incident_already_closed",
+        "delivery_busy",
     }:
         return status.HTTP_409_CONFLICT
+    if code in {"delivery_profile_not_found", "availability_status_invalid"}:
+        return status.HTTP_400_BAD_REQUEST
     return status.HTTP_400_BAD_REQUEST

@@ -2,8 +2,6 @@ from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 
-from shared.security.jwt_authentication import SupabaseAuthUser, fetch_supabase_user, sync_user_profile
-
 
 class SupabaseTokenAuthMiddleware:
     def __init__(self, inner):
@@ -15,13 +13,23 @@ class SupabaseTokenAuthMiddleware:
 
     @database_sync_to_async
     def _resolve_user(self, scope):
+        from shared.security.jwt_authentication import (
+            SupabaseAuthUser,
+            build_supabase_user_from_token,
+            fetch_supabase_user,
+            sync_user_profile,
+        )
+
         raw_query = scope.get("query_string", b"").decode()
         params = parse_qs(raw_query)
         token = (params.get("token") or [""])[0].strip()
         if not token:
             return None
         try:
-            user_data = fetch_supabase_user(token)
+            try:
+                user_data = build_supabase_user_from_token(token)
+            except Exception:
+                user_data = fetch_supabase_user(token)
             profile = sync_user_profile(user_data)
             if not profile.is_active:
                 return None

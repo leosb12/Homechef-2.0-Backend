@@ -58,6 +58,51 @@ class DeliveryAssignment(models.Model):
         return f"{self.order_id} - {self.status}"
 
 
+class DeliveryAssignmentOffer(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pendiente"
+        ACCEPTED = "ACCEPTED", "Aceptada"
+        REJECTED = "REJECTED", "Rechazada"
+        EXPIRED = "EXPIRED", "Expirada"
+        CANCELLED = "CANCELLED", "Cancelada"
+
+    id = models.CharField(max_length=64, primary_key=True, default=uuid4_string, editable=False)
+    assignment = models.ForeignKey(
+        DeliveryAssignment,
+        on_delete=models.CASCADE,
+        related_name="offers",
+    )
+    delivery_user = models.ForeignKey(
+        UserProfile,
+        on_delete=models.CASCADE,
+        related_name="delivery_assignment_offers",
+        limit_choices_to={"role": UserProfile.ROLE_DELIVERY},
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    offered_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    responded_at = models.DateTimeField(null=True, blank=True)
+    response_reason = models.CharField(max_length=120, blank=True)
+    attempt_number = models.PositiveIntegerField(default=1)
+    selection_distance_meters = models.FloatField(default=0)
+    selection_snapshot = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "delivery_assignment_offers"
+        indexes = [
+            models.Index(fields=["assignment", "status"]),
+            models.Index(fields=["delivery_user", "status"]),
+            models.Index(fields=["expires_at"]),
+            models.Index(fields=["offered_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.assignment_id} -> {self.delivery_user_id} ({self.status})"
+
+
 class DeliveryStatusHistory(models.Model):
     id = models.CharField(max_length=64, primary_key=True, default=uuid4_string, editable=False)
     assignment = models.ForeignKey(

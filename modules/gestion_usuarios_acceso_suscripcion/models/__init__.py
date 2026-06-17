@@ -56,6 +56,15 @@ class DeliveryProfile(models.Model):
         ACTIVE = "activo", "Activo"
         SUSPENDED = "suspendido", "Suspendido"
 
+    class AvailabilityManualStatus(models.TextChoices):
+        AVAILABLE = "DISPONIBLE", "Disponible"
+        OFF_DUTY = "FUERA_DE_SERVICIO", "Fuera de servicio"
+
+    class AvailabilityEffectiveStatus(models.TextChoices):
+        AVAILABLE = "DISPONIBLE", "Disponible"
+        BUSY = "OCUPADO", "Ocupado"
+        OFF_DUTY = "FUERA_DE_SERVICIO", "Fuera de servicio"
+
     user = models.OneToOneField(
         UserProfile,
         on_delete=models.CASCADE,
@@ -72,6 +81,17 @@ class DeliveryProfile(models.Model):
         choices=ApprovalStatus.choices,
         default=ApprovalStatus.RECENTLY_REGISTERED,
     )
+    availability_manual_status = models.CharField(
+        max_length=30,
+        choices=AvailabilityManualStatus.choices,
+        default=AvailabilityManualStatus.OFF_DUTY,
+    )
+    availability_effective_status = models.CharField(
+        max_length=30,
+        choices=AvailabilityEffectiveStatus.choices,
+        default=AvailabilityEffectiveStatus.OFF_DUTY,
+    )
+    availability_status_changed_at = models.DateTimeField(null=True, blank=True)
     status_notes = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -80,12 +100,47 @@ class DeliveryProfile(models.Model):
         db_table = "delivery_profiles"
         indexes = [
             models.Index(fields=["approval_status", "created_at"]),
+            models.Index(fields=["availability_manual_status", "availability_effective_status"]),
             models.Index(fields=["vehicle_type"]),
             models.Index(fields=["vehicle_plate"]),
         ]
 
     def __str__(self):
         return f"{self.user.email} - {self.vehicle_plate}"
+
+
+class DeliveryAvailabilityHistory(models.Model):
+    class Reason(models.TextChoices):
+        MANUAL_AVAILABLE = "manual_available", "Disponible manual"
+        MANUAL_OFF_DUTY = "manual_off_duty", "Fuera de servicio manual"
+        AUTO_CAPACITY_REACHED = "auto_capacity_reached", "Capacidad alcanzada"
+        AUTO_CAPACITY_RELEASED = "auto_capacity_released", "Capacidad liberada"
+        SYNC = "sync", "Sincronizacion"
+
+    id = models.BigAutoField(primary_key=True)
+    delivery_profile = models.ForeignKey(
+        DeliveryProfile,
+        on_delete=models.CASCADE,
+        related_name="availability_history",
+    )
+    previous_manual_status = models.CharField(max_length=30, blank=True)
+    next_manual_status = models.CharField(max_length=30, blank=True)
+    previous_effective_status = models.CharField(max_length=30, blank=True)
+    next_effective_status = models.CharField(max_length=30, blank=True)
+    active_assignments_count = models.PositiveIntegerField(default=0)
+    reason = models.CharField(max_length=40, choices=Reason.choices, default=Reason.SYNC)
+    metadata = models.JSONField(default=dict, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "delivery_availability_history"
+        indexes = [
+            models.Index(fields=["delivery_profile", "changed_at"]),
+            models.Index(fields=["reason", "changed_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.delivery_profile_id} - {self.reason}"
 
 
 class AuditEvent(models.Model):

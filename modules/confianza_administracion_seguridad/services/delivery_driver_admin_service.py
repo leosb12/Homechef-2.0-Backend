@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from modules.delivery_logistica.models import DeliveryAssignment
 from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 
 
@@ -70,6 +71,15 @@ class DeliveryDriverAdminService:
         return UserProfile.objects.filter(supabase_user_id=parsed).first()
 
     def _serialize(self, profile: DeliveryProfile):
+        active_assignments_count = DeliveryAssignment.objects.filter(
+            delivery_user=profile.user,
+            status__in=[
+                DeliveryAssignment.Status.ASSIGNED,
+                DeliveryAssignment.Status.AT_CHEF,
+                DeliveryAssignment.Status.PICKED_UP,
+                DeliveryAssignment.Status.EN_ROUTE_TO_CLIENT,
+            ],
+        ).count()
         return {
             "user_id": str(profile.user.supabase_user_id),
             "email": profile.user.email,
@@ -86,6 +96,13 @@ class DeliveryDriverAdminService:
             "vehicle_rear_image_url": profile.vehicle_rear_image_url,
             "approval_status": profile.approval_status,
             "status_notes": profile.status_notes,
+            "availability_manual_status": profile.availability_manual_status,
+            "availability_effective_status": profile.availability_effective_status,
+            "availability_status_changed_at": profile.availability_status_changed_at.isoformat()
+            if profile.availability_status_changed_at
+            else None,
+            "active_assignments_count": active_assignments_count,
+            "capacity_limit": 3,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
         }

@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from modules.confianza_administracion_seguridad.services import NotificationService
+from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
 from modules.delivery_logistica.models import (
     DeliveryAssignment,
     DeliveryStatusHistory,
@@ -19,8 +19,11 @@ from modules.pedidos_checkout_pagos.models import (
     OrderTimelineEvent,
 )
 from .delivery_assignment_engine import DeliveryAssignmentEngine
+from .delivery_availability_service import DeliveryAvailabilityService
+from .delivery_offer_service import DeliveryOfferService
 from .delivery_tracking_service import DeliveryTrackingService
 from .delivery_incident_service import DeliveryIncidentService
+from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
 
 
 class DeliveryLogisticsError(ValueError):
@@ -49,17 +52,23 @@ class DeliveryOperationsService:
         self.incident_service = DeliveryIncidentService()
         self.notification_service = NotificationService()
         self.assignment_engine = DeliveryAssignmentEngine()
+        self.availability_service = DeliveryAvailabilityService()
+        self.offer_service = DeliveryOfferService()
 
     def list_assigned(self, user_id: str):
         delivery = self._require_delivery(user_id)
-        self.assignment_engine.sync_open_assignments()
+        self.offer_service.sync_open_assignments()
+        pending_offer_assignment_ids = self.offer_service.get_pending_assignment_ids_for_delivery(delivery)
         assignments = (
             DeliveryAssignment.objects.filter(
                 order__fulfillment_type=Order.FulfillmentType.DELIVERY,
                 order__status=Order.Status.READY_FOR_DELIVERY,
                 status__in=list(self.PRE_PICKUP_STATUSES),
             )
-            .filter(Q(delivery_user__isnull=True) | Q(delivery_user=delivery))
+            .filter(
+                Q(delivery_user=delivery)
+                | Q(id__in=pending_offer_assignment_ids)
+            )
             .select_related(
                 "delivery_user",
                 "order",
@@ -142,11 +151,49 @@ class DeliveryOperationsService:
             lock=True,
             allow_unassigned=True,
         )
+        active_offer = self.offer_service.get_pending_offer_for_assignment(assignment, delivery)
+        if active_offer:
+            self.offer_service.accept_offer(assignment, delivery)
+            assignment.refresh_from_db()
+            DeliveryStatusHistory.objects.create(
+                assignment=assignment,
+                from_status=DeliveryAssignment.Status.UNASSIGNED,
+                to_status=assignment.status,
+                actor_role="REPARTIDOR",
+                actor_id=str(delivery.supabase_user_id),
+                notes="Oferta de entrega aceptada por repartidor",
+                metadata={"order_id": assignment.order_id, "offer_id": active_offer.id},
+            )
+            OrderTimelineEvent.objects.create(
+                order=assignment.order,
+                event_code="DELIVERY_OFFER_ACCEPTED",
+                event_label="Repartidor acepto la oferta de entrega",
+                actor_role="REPARTIDOR",
+                actor_id=str(delivery.supabase_user_id),
+                metadata={"assignment_id": assignment.id, "offer_id": active_offer.id},
+            )
+            self.tracking_service.refresh_current_route(assignment)
+            self.availability_service.sync_for_user(delivery)
+            self._publish_snapshot(assignment)
+            return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
+        if self.offer_service.is_open_board_assignment(assignment):
+            claimed_assignment = self.offer_service.claim_open_board_assignment(assignment_id, user_id)
+            self.tracking_service.refresh_current_route(claimed_assignment)
+            claimed_assignment.refresh_from_db()
+            self._publish_snapshot(claimed_assignment)
+            return {"assignment": self._serialize_assignment(claimed_assignment, delivery, detailed=True)}
+        if self.offer_service.has_active_offer_for_assignment(assignment):
+            raise DeliveryLogisticsError(
+                "La entrega fue ofertada a otro repartidor y aun no esta libre para tomar.",
+                "assignment_offer_reserved",
+            )
         if assignment.delivery_user_id and assignment.delivery_user_id != delivery.id:
             raise DeliveryLogisticsError(
                 "La entrega ya fue tomada por otro repartidor.",
                 "assignment_already_taken",
             )
+        if assignment.delivery_user_id == delivery.id and assignment.status in self.ACTIVE_STATUSES:
+            return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
         if assignment.status != DeliveryAssignment.Status.UNASSIGNED:
             raise DeliveryLogisticsError(
                 "La entrega no se puede tomar en su estado actual.",
@@ -185,36 +232,33 @@ class DeliveryOperationsService:
         )
         self.tracking_service.refresh_current_route(assignment)
         assignment.refresh_from_db()
+        self.availability_service.sync_for_user(delivery)
         self.notification_service.notify_delivery_assigned(assignment)
         self._publish_snapshot(assignment)
         return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
 
     @transaction.atomic
     def reject_assignment(self, user_id: str, assignment_id: str):
+        payload = self.offer_service.reject_offer(assignment_id, user_id)
+        self.offer_service.sync_open_assignments()
+        return payload
+
+    def list_open_board(self, user_id: str):
+        return self.offer_service.list_open_board(user_id)
+
+    def claim_open_board_assignment(self, user_id: str, assignment_id: str):
         delivery = self._require_delivery(user_id)
-        assignment = self._get_owned_assignment(delivery, assignment_id, lock=True)
-        if assignment.status not in {
-            DeliveryAssignment.Status.ASSIGNED,
-            DeliveryAssignment.Status.AT_CHEF,
-        }:
-            raise DeliveryLogisticsError(
-                "La entrega no puede rechazarse en su estado actual.",
-                "transition_not_allowed",
-            )
-        updated_assignment = self.assignment_engine.reject_and_reassign(
-            assignment,
-            delivery=delivery,
-            actor_role="REPARTIDOR",
-            actor_id=str(delivery.supabase_user_id),
-        )
-        return {
-            "message": "Entrega rechazada y cola de reasignacion ejecutada.",
-            "assignment_id": assignment.id,
-            "reassigned_to": {
-                "id": str(updated_assignment.delivery_user.supabase_user_id),
-                "name": self._profile_name(updated_assignment.delivery_user),
-            } if updated_assignment.delivery_user else None,
-        }
+        assignment = self.offer_service.claim_open_board_assignment(assignment_id, user_id)
+        self.tracking_service.refresh_current_route(assignment)
+        assignment.refresh_from_db()
+        self._publish_snapshot(assignment)
+        return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
+
+    def cancel_assignment(self, user_id: str, assignment_id: str):
+        delivery = self._require_delivery(user_id)
+        assignment = self.offer_service.cancel_assignment_to_open_board(assignment_id, user_id)
+        self._publish_snapshot(assignment)
+        return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
 
     @transaction.atomic
     def arrived_chef(self, user_id: str, assignment_id: str):
@@ -241,6 +285,7 @@ class DeliveryOperationsService:
         )
         self.tracking_service.refresh_current_route(assignment)
         assignment.refresh_from_db()
+        self.availability_service.sync_for_user(delivery)
         self._publish_snapshot(assignment)
         return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
 
@@ -275,6 +320,7 @@ class DeliveryOperationsService:
         assignment.refresh_from_db()
         self.notification_service.notify_order_picked_up(assignment.order, assignment)
         self._publish_snapshot(assignment)
+        self.availability_service.sync_for_user(delivery)
         return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
 
     @transaction.atomic
@@ -326,6 +372,7 @@ class DeliveryOperationsService:
             self.notification_service.notify_payment_confirmed(assignment.order, payment)
         self.notification_service.notify_order_delivered(assignment.order, assignment)
         self._publish_snapshot(assignment)
+        self.availability_service.sync_for_user(delivery)
         return {"assignment": self._serialize_assignment(assignment, delivery, detailed=True)}
 
     def _serialize_assignment(self, assignment: DeliveryAssignment, viewer: UserProfile, detailed: bool = False):
@@ -390,7 +437,13 @@ class DeliveryOperationsService:
                 "last_attempt_at": (assignment.metadata or {}).get("assignment_last_attempt_at"),
                 "strategy": (assignment.metadata or {}).get("assignment_strategy", ""),
                 "candidate_snapshot": (assignment.metadata or {}).get("candidate_snapshot") or [],
-                "reassignment_history": (assignment.metadata or {}).get("reassignment_history") or [],
+                "flow_state": (assignment.metadata or {}).get("offer_flow_state", ""),
+                "flow_audit": (assignment.metadata or {}).get("flow_audit") or [],
+                "pending_delivery_name": (assignment.metadata or {}).get("offer_pending_delivery_name", ""),
+                "pending_expires_at": (assignment.metadata or {}).get("offer_pending_expires_at", ""),
+                "open_board_enabled": bool((assignment.metadata or {}).get("open_board_enabled")),
+                "open_board_enabled_at": (assignment.metadata or {}).get("open_board_enabled_at"),
+                "open_board_reason": (assignment.metadata or {}).get("open_board_reason", ""),
                 "estimated_distance_meters": (assignment.metadata or {}).get("assigned_distance_meters"),
                 "estimated_distance_human": (assignment.metadata or {}).get("assigned_distance_human", ""),
                 "last_result": (assignment.metadata or {}).get("assignment_last_result", ""),
@@ -416,11 +469,26 @@ class DeliveryOperationsService:
             assignment.status == DeliveryAssignment.Status.UNASSIGNED
             and assignment.order.status == Order.Status.READY_FOR_DELIVERY
         ):
-            return ["accept"]
+            if self.offer_service.get_pending_offer_for_assignment(assignment, viewer):
+                return ["accept", "reject"]
+            if self.offer_service.is_open_board_assignment(assignment):
+                effective_status = self.availability_service.resolve_effective_status(
+                    getattr(viewer.delivery_profile, "availability_manual_status", "FUERA_DE_SERVICIO")
+                    if getattr(viewer, "delivery_profile", None)
+                    else "FUERA_DE_SERVICIO",
+                    DeliveryAssignment.objects.filter(
+                        delivery_user=viewer,
+                        status__in=list(self.ACTIVE_STATUSES),
+                    ).count(),
+                )
+                if effective_status != "OCUPADO":
+                    return ["claim"]
+            return []
         if assignment.delivery_user_id != viewer.id:
             return []
+        if assignment.status == DeliveryAssignment.Status.ASSIGNED:
+            return ["cancel", "picked_up"]
         if assignment.status in {
-            DeliveryAssignment.Status.ASSIGNED,
             DeliveryAssignment.Status.AT_CHEF,
         }:
             return ["picked_up"]
@@ -431,6 +499,7 @@ class DeliveryOperationsService:
         return []
 
     def _publish_snapshot(self, assignment: DeliveryAssignment):
+        publish_order_tracking_refresh(str(assignment.order_id))
         if not assignment.delivery_user_id:
             return
         from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
@@ -508,6 +577,7 @@ class DeliveryOperationsService:
             actor_id=str(actor_id),
             metadata={"from_status": previous, "to_status": to_status},
         )
+        publish_order_tracking_refresh(str(order.id))
 
     def _confirm_cash_payment(self, payment: OrderPayment, delivery: UserProfile, metadata: dict):
         payment.status = OrderPayment.Status.CONFIRMED
@@ -539,6 +609,7 @@ class DeliveryOperationsService:
             actor_id=str(delivery.supabase_user_id),
             metadata={"payment_id": payment.id, **metadata},
         )
+        publish_order_tracking_refresh(str(payment.order_id))
 
     def _get_assignment_for_delivery(
         self,
@@ -550,10 +621,6 @@ class DeliveryOperationsService:
         queryset = DeliveryAssignment.objects.filter(id=str(assignment_id))
         if not allow_unassigned:
             queryset = queryset.filter(delivery_user=delivery)
-        else:
-            queryset = queryset.filter(
-                Q(delivery_user__isnull=True) | Q(delivery_user=delivery)
-            )
         if lock:
             queryset = queryset.select_for_update(of=("self",))
         assignment = (
@@ -574,7 +641,43 @@ class DeliveryOperationsService:
             )
             .first()
         )
+        if assignment and allow_unassigned and not self.offer_service.can_delivery_view_assignment(assignment, delivery):
+            if (
+                assignment.status == DeliveryAssignment.Status.UNASSIGNED
+                and not assignment.delivery_user_id
+                and assignment.order.status == Order.Status.READY_FOR_DELIVERY
+            ):
+                self.offer_service.ensure_offer_up_to_date(
+                    assignment,
+                    reason="delivery_access_sync",
+                )
+                assignment = (
+                    queryset.select_related(
+                        "order",
+                        "order__client",
+                        "order__chef",
+                        "delivery_user",
+                    )
+                    .prefetch_related(
+                        "status_history",
+                        "incidents",
+                        "location_pings",
+                        "route_snapshots",
+                        "order__address",
+                        "order__items",
+                        "order__payments",
+                    )
+                    .first()
+                )
+            if assignment and not self.offer_service.can_delivery_view_assignment(assignment, delivery):
+                assignment = None
         if not assignment:
+            raw_assignment = DeliveryAssignment.objects.select_related("delivery_user").filter(id=str(assignment_id)).first()
+            if raw_assignment and self.offer_service.has_active_offer_for_assignment(raw_assignment):
+                raise DeliveryLogisticsError(
+                    "La entrega fue ofertada a otro repartidor y aun no esta libre para tomar.",
+                    "assignment_offer_reserved",
+                )
             foreign_assignment = DeliveryAssignment.objects.select_related("delivery_user").filter(id=str(assignment_id)).first()
             if foreign_assignment and foreign_assignment.delivery_user_id and foreign_assignment.delivery_user_id != delivery.id:
                 raise DeliveryLogisticsError(

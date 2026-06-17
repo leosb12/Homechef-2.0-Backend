@@ -270,6 +270,8 @@ class NotificationCenterTests(TestCase):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(len(list_response.data["items"]), 1)
         self.assertEqual(list_response.data["items"][0]["approval_status"], "recien_registrado")
+        self.assertIn("availability_manual_status", list_response.data["items"][0])
+        self.assertIn("active_assignments_count", list_response.data["items"][0])
 
         activate_response = self.api.post(
             f"/api/v1/trust-admin/delivery-drivers/{self.delivery_profile.supabase_user_id}/status/",
@@ -356,13 +358,17 @@ class NotificationCenterTests(TestCase):
         detail_response = self.api.get(f"/api/v1/trust-admin/delivery-orders/active/{order.id}/")
         self.assertEqual(detail_response.status_code, 200)
         self.assertEqual(detail_response.data["order"]["delivery_assignment"]["id"], assignment.id)
-        self.assertEqual(
-            detail_response.data["order"]["delivery_assignment"]["delivery_user"]["id"],
-            str(self.delivery_profile.supabase_user_id),
-        )
         self.assertIn(
             "candidate_snapshot",
             detail_response.data["order"]["delivery_assignment"]["operational_context"],
+        )
+        self.assertIn(
+            "flow_audit",
+            detail_response.data["order"]["delivery_assignment"]["operational_context"],
+        )
+        self.assertIn(
+            detail_response.data["order"]["delivery_assignment"]["operational_context"]["flow_state"],
+            {"OFFER_PENDING", "WAITING_ROUND_2", "OPEN_BOARD"},
         )
 
     def _open_slot(self):

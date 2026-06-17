@@ -22,5 +22,26 @@ def publish_assignment_snapshot_for_delivery(assignment_id: str, delivery_user_i
         {
             "type": "delivery_assignment_snapshot",
             "assignment": payload["assignment"],
+            "delivery_user_id": str(delivery_user_id),
         },
     )
+
+
+def publish_delivery_dashboard_refresh(*, delivery_user_id: str | None = None, include_global: bool = False, reason: str = ""):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    event = {
+        "type": "delivery_dashboard_refresh",
+        "reason": reason,
+    }
+    if delivery_user_id:
+        async_to_sync(channel_layer.group_send)(
+            f"delivery_dashboard_{delivery_user_id}",
+            event,
+        )
+    if include_global:
+        async_to_sync(channel_layer.group_send)(
+            "delivery_dashboard_all",
+            event,
+        )

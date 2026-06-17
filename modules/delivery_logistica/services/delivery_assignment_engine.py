@@ -5,11 +5,14 @@ from math import asin, cos, radians, sin, sqrt
 from django.db import transaction
 from django.utils import timezone
 
-from modules.confianza_administracion_seguridad.services import NotificationService
+from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryLocationPing, DeliveryStatusHistory
 from modules.gestion_cocinero.models import ChefProfile
 from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 from modules.pedidos_checkout_pagos.models import Order
+from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
+
+from .delivery_availability_service import DeliveryAvailabilityService
 
 
 class DeliveryAssignmentEngine:
@@ -31,6 +34,7 @@ class DeliveryAssignmentEngine:
 
     def __init__(self):
         self.notification_service = NotificationService()
+        self.availability_service = DeliveryAvailabilityService()
 
     @transaction.atomic
     def ensure_assignment_up_to_date(
@@ -156,6 +160,14 @@ class DeliveryAssignmentEngine:
         assignment.metadata = metadata
         assignment.save(update_fields=list(dict.fromkeys(update_fields)))
         assignment.refresh_from_db()
+        publish_order_tracking_refresh(str(assignment.order_id))
+        if assignment.delivery_user_id:
+            from modules.delivery_logistica.realtime import publish_assignment_snapshot_for_delivery
+
+            publish_assignment_snapshot_for_delivery(
+                assignment.id,
+                str(assignment.delivery_user.supabase_user_id),
+            )
         if selected:
             self.notification_service.notify_delivery_assigned(assignment)
         return assignment
@@ -227,6 +239,9 @@ class DeliveryAssignmentEngine:
                 actor_id="",
             )
 
+    def build_candidate_snapshot(self, assignment: DeliveryAssignment, excluded_delivery_user_ids: list[str] | None = None):
+        return self._build_candidate_snapshot(assignment, excluded_delivery_user_ids or [])
+
     def _build_candidate_snapshot(self, assignment: DeliveryAssignment, excluded_delivery_user_ids: list[str]):
         chef_point = self._chef_point(assignment)
         if chef_point["lat"] is None or chef_point["lng"] is None:
@@ -249,6 +264,12 @@ class DeliveryAssignmentEngine:
                 delivery_user=profile.user,
                 status__in=list(self.ACTIVE_DRIVER_ASSIGNMENT_STATUSES),
             ).exclude(pk=assignment.pk).count()
+            effective_status = self.availability_service.resolve_effective_status(
+                profile.availability_manual_status,
+                active_assignments,
+            )
+            if effective_status != DeliveryProfile.AvailabilityEffectiveStatus.AVAILABLE:
+                continue
             if active_assignments >= self.MAX_ACTIVE_ASSIGNMENTS_PER_DRIVER:
                 continue
             point = self._delivery_point(profile.user)

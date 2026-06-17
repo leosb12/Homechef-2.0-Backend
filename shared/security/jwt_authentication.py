@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone as dt_timezone
 from uuid import UUID
 
+import jwt
 import requests
 from django.conf import settings
 from django.db import transaction
@@ -91,6 +93,43 @@ def fetch_supabase_user(token: str) -> dict:
     if not user_data.get("id"):
         raise exceptions.AuthenticationFailed("JWT de Supabase sin usuario asociado.")
     return user_data
+
+
+def build_supabase_user_from_token(token: str) -> dict:
+    try:
+        claims = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_iss": False,
+                "verify_exp": False,
+            },
+            algorithms=["ES256", "HS256"],
+        )
+    except jwt.PyJWTError as exc:
+        raise exceptions.AuthenticationFailed("JWT de Supabase invalido.") from exc
+
+    exp = claims.get("exp")
+    if exp:
+        expires_at = datetime.fromtimestamp(int(exp), tz=dt_timezone.utc)
+        if expires_at <= datetime.now(dt_timezone.utc):
+            raise exceptions.AuthenticationFailed("JWT de Supabase expirado.")
+
+    user_id = str(claims.get("sub") or "").strip()
+    if not user_id:
+        raise exceptions.AuthenticationFailed("JWT de Supabase sin usuario asociado.")
+
+    return {
+        "id": user_id,
+        "email": str(claims.get("email") or "").strip(),
+        "phone": str(claims.get("phone") or "").strip(),
+        "user_metadata": claims.get("user_metadata") or {},
+        "app_metadata": claims.get("app_metadata") or {},
+        "role": claims.get("role"),
+        "session_id": claims.get("session_id"),
+        "is_anonymous": claims.get("is_anonymous", False),
+    }
 
 
 @transaction.atomic

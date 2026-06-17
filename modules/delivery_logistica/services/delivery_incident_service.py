@@ -4,11 +4,12 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from modules.confianza_administracion_seguridad.services import NotificationService
+from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident
 from modules.gestion_cocinero.models import ChefProfile
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.pedidos_checkout_pagos.models import Order, OrderTimelineEvent
+from modules.pedidos_checkout_pagos.realtime import publish_order_tracking_refresh
 
 
 class DeliveryIncidentError(ValueError):
@@ -89,6 +90,7 @@ class DeliveryIncidentService:
                 assignment.id,
                 str(assignment.delivery_user.supabase_user_id),
             )
+        publish_order_tracking_refresh(str(assignment.order_id))
         return {
             "incident": self._serialize_incident(incident, viewer_role="REPARTIDOR"),
             "incidents": self._serialize_incident_collection(assignment, viewer_role="REPARTIDOR"),
@@ -101,6 +103,7 @@ class DeliveryIncidentService:
         incident = self._get_incident(assignment, incident_id)
         self._assert_resolution_allowed(incident, resolver_role="COCINERO")
         self._resolve_incident(incident, chef, "COCINERO", payload)
+        publish_order_tracking_refresh(str(assignment.order_id))
         return {
             "incident": self._serialize_incident(incident, viewer_role="COCINERO"),
             "incidents": self._serialize_incident_collection(assignment, viewer_role="COCINERO"),
@@ -120,6 +123,7 @@ class DeliveryIncidentService:
                 assignment.id,
                 str(assignment.delivery_user.supabase_user_id),
             )
+        publish_order_tracking_refresh(str(assignment.order_id))
         return {
             "incident": self._serialize_incident(incident, viewer_role="REPARTIDOR"),
             "incidents": self._serialize_incident_collection(assignment, viewer_role="REPARTIDOR"),
