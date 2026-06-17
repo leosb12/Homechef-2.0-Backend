@@ -376,6 +376,16 @@ class ChefRepository:
             "deleted_at": dish.deleted_at,
             "version": dish.version,
             "updated_at": dish.updated_at,
+            "revision_status": dish.revision_status,
+            "ia_risk_score": dish.ia_risk_score,
+            "ia_quality_review_id": dish.ia_quality_review_id,
+            "ia_quality_reasons": dish.ia_quality_reasons,
+            "ia_quality_recommendation": dish.ia_quality_recommendation,
+            "reported_count": dish.reported_count,
+            "last_quality_analysis_at": dish.last_quality_analysis_at.isoformat() if dish.last_quality_analysis_at else None,
+            "admin_reviewed_by": str(dish.admin_reviewed_by.supabase_user_id) if dish.admin_reviewed_by else None,
+            "admin_reviewed_at": dish.admin_reviewed_at.isoformat() if dish.admin_reviewed_at else None,
+            "admin_review_comment": dish.admin_review_comment,
         }
 
     def _menu_to_dict(self, menu: DailyMenu):

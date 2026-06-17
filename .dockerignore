@@ -1,0 +1,15 @@
+venv
+.venv
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.development
+.env.production
+.env.local
+db.sqlite3
+tests
+*.log

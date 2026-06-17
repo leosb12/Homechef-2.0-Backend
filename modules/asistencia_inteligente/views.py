@@ -30,5 +30,22 @@ def suggest_production_price(request):
 
 @api_view(['POST'])
 def publication_helper(request):
-    denied = _guard(request)
-    return denied or Response(AIPublicationHelperService().run(request.data))
+    from rest_framework import status
+    from modules.gestion_usuarios_acceso_suscripcion.services.ia_access_service import IAAccessService
+    
+    access_result = IAAccessService().validar_acceso_ia(request.user, 'publicacion_platos')
+    if not access_result.get('permitido', False):
+        code = access_result.get('codigo', 'PLAN_SIN_IA')
+        status_code = status.HTTP_403_FORBIDDEN
+        if code == 'USUARIO_NO_AUTENTICADO':
+            status_code = status.HTTP_401_UNAUTHORIZED
+        elif code in ['SUSCRIPCION_INEXISTENTE', 'SUSCRIPCION_INACTIVA', 'PLAN_SIN_IA']:
+            status_code = status.HTTP_402_PAYMENT_REQUIRED
+            
+        msg = access_result.get('mensaje')
+        if code in ['PLAN_SIN_IA', 'SUSCRIPCION_INEXISTENTE', 'SUSCRIPCION_INACTIVA']:
+            msg = "Función premium. Activa un plan IA con asistencia en publicaciones para generar título, descripción, etiquetas, categorías y precio sugerido automáticamente."
+            
+        return Response({'detail': msg, 'code': code}, status=status_code)
+        
+    return Response(AIPublicationHelperService().run(request.data))

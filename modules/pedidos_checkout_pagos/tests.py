@@ -97,7 +97,7 @@ class DishStockServiceTests(TestCase):
         with self.assertRaises(StockValidationError) as ctx:
             self.service.validate_dish_request(self.dish.id, 9)
 
-        self.assertEqual(ctx.exception.code, "stock_unavailable")
+        self.assertEqual(ctx.exception.code, "insufficient_portions")
         self.assertEqual(ctx.exception.details["available_portions"], 8)
 
     def test_reserve_and_release_order_stock_against_active_menu_item(self):

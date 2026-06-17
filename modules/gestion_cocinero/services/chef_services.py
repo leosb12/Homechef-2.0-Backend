@@ -149,6 +149,22 @@ class ChefServices:
         ):
             raise ValueError("Imagen del plato invalida.")
         dish = self.repo.save_dish(chef_id, payload)
+        
+        # Trigger quality analysis
+        from modules.gestion_cocinero.models import Dish
+        from modules.confianza_administracion_seguridad.services.quality_analysis_service import QualityAnalysisService
+        
+        dish_instance = Dish.objects.filter(id=dish["id"]).first()
+        if dish_instance:
+            try:
+                QualityAnalysisService().analyze_publication_quality(dish_instance)
+                # Re-fetch the dictionary representation to include updated IA fields
+                updated_dish = self.repo.get_dish(chef_id, dish["id"])
+                if updated_dish:
+                    dish = updated_dish
+            except Exception:
+                pass
+
         self.repo.log("chef_dish_saved", {"chef_id": chef_id, "dish_id": dish["_id"], "status": dish.get("status")})
         return dish
 
