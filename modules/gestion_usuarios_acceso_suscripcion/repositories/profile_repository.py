@@ -76,6 +76,7 @@ class ProfileRepository:
             "schedule": payload.get("schedule", ""),
             "profile_image_url": payload.get("profile_image_url", ""),
             "status": payload.get("status", "pending_validation"),
+            "kitchen_photos": payload.get("kitchen_photos", []),
         }
         ChefProfile.objects.update_or_create(user=user, defaults=defaults)
         return self.get_chef_profile(user_id)
@@ -121,6 +122,7 @@ class ProfileRepository:
             "schedule": profile.schedule,
             "profile_image_url": profile.profile_image_url,
             "status": profile.status,
+            "kitchen_photos": profile.kitchen_photos,
             "updated_at": profile.updated_at,
         }
 

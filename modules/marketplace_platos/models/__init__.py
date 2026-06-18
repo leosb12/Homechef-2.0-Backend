@@ -72,6 +72,13 @@ class MarketplaceReview(models.Model):
         related_name="marketplace_reviews",
     )
     dish_ref_id = models.CharField(max_length=128, blank=True, db_index=True)
+    reviewer = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_marketplace_reviews",
+    )
     author = models.CharField(max_length=120, blank=True)
     rating = models.PositiveSmallIntegerField(default=0)
     comment = models.TextField(blank=True)

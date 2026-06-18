@@ -472,6 +472,61 @@ class NotificationService:
             ]
         )
 
+    def notify_user_blocked(self, user: UserProfile, is_blocked: bool):
+        action = "bloqueada" if is_blocked else "desbloqueada"
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=user,
+                    category=OperationalNotification.Category.ADMINISTRATIVE,
+                    event_code="USER_BLOCKED" if is_blocked else "USER_UNBLOCKED",
+                    title="Actualizacion de cuenta",
+                    message=f"Tu cuenta ha sido {action} por la administracion de la plataforma.",
+                )
+            ]
+        )
+
+    def notify_chef_validation(self, chef_user: UserProfile, status: str):
+        if status == "approved":
+            title = "¡Perfil de cocinero aprobado!"
+            message = "Tu solicitud ha sido aprobada. Ya puedes comenzar a publicar platos en HomeChef."
+            event_code = "CHEF_APPROVED"
+        else:
+            title = "Perfil de cocinero rechazado"
+            message = "Tu solicitud para ser cocinero no ha sido aprobada en esta ocasion."
+            event_code = "CHEF_REJECTED"
+
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.ADMINISTRATIVE,
+                    event_code=event_code,
+                    title=title,
+                    message=message,
+                )
+            ]
+        )
+
+    def notify_publication_action(self, chef_user: UserProfile, dish_name: str, action: str):
+        if action == "paused":
+            message = f"Tu plato '{dish_name}' ha sido pausado por la administracion. Por favor, revisa que cumpla con nuestras politicas."
+        else:
+            message = f"Tu plato '{dish_name}' ha sido eliminado por incumplir las normas de la plataforma."
+            
+        self._notify_many(
+            [
+                self._build_notification(
+                    recipient=chef_user,
+                    category=OperationalNotification.Category.ADMINISTRATIVE,
+                    event_code="PUBLICATION_ACTION",
+                    title="Accion sobre tu publicacion",
+                    message=message,
+                    metadata={"dish_name": dish_name, "action": action},
+                )
+            ]
+        )
+
     def _notify_many(self, notifications: Iterable[dict | None]):
         payloads = [row for row in notifications if row and row.get("recipient")]
         for payload in payloads:

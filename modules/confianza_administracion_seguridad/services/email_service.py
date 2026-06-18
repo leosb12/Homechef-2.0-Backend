@@ -219,3 +219,65 @@ class EmailService:
             args=(chef_email, subject, html_content)
         )
         thread.start()
+
+    @staticmethod
+    def send_admin_action_alert(user_email: str, user_name: str, subject: str, title: str, message: str, color: str = "#7c3aed"):
+        """
+        Envía un correo asíncrono para notificaciones administrativas (bloqueos, validaciones, etc.).
+        """
+        if not user_email:
+            return
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{subject} - HomeChef</title>
+        </head>
+        <body style="margin: 0; padding: 0; background-color: #f4f6fb; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #0f172a;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f4f6fb; padding: 40px 20px;">
+                <tr>
+                    <td align="center">
+                        <table width="100%" max-width="600" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.05); max-width: 600px;">
+                            <tr>
+                                <td style="background-color: {color}; padding: 30px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0.5px;">HomeChef</h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 40px 30px;">
+                                    <h2 style="margin-top: 0; color: #1e293b; font-size: 22px;">{title}</h2>
+                                    <p style="color: #475569; font-size: 16px; line-height: 1.6; margin-bottom: 24px;">
+                                        Hola <strong style="color: #0f172a;">{user_name}</strong>,
+                                    </p>
+                                    <p style="color: #475569; font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
+                                        {message}
+                                    </p>
+                                    <p style="color: #475569; font-size: 15px; line-height: 1.6; text-align: center; margin-bottom: 0;">
+                                        Si tienes dudas, por favor contacta al soporte de HomeChef.
+                                    </p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="background-color: #f1f5f9; padding: 20px; text-align: center; border-top: 1px solid #e2e8f0;">
+                                    <p style="color: #64748b; font-size: 13px; margin: 0;">
+                                        © 2026 HomeChef. Todos los derechos reservados.<br>
+                                        <span style="font-size: 11px;">Este es un correo automático, por favor no respondas a este mensaje.</span>
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+
+        thread = threading.Thread(
+            target=_send_email_async, 
+            args=(user_email, subject, html_content)
+        )
+        thread.start()

@@ -47,6 +47,18 @@ class AuthService:
         )
 
         if role == "COCINERO":
+            upload_service = StorageUploadService()
+            raw_user = self.user_repo.find_raw_by_email(email)
+            kitchen_photos_urls = []
+            
+            for photo_file in payload.get("kitchen_photos", []):
+                upload = upload_service.upload_for_owner(
+                    raw_user,
+                    photo_file,
+                    file_type="kitchen_photo",
+                )
+                kitchen_photos_urls.append(upload.public_url)
+
             self.profile_repo.save_chef_profile(
                 supabase_user_id,
                 {
@@ -57,6 +69,7 @@ class AuthService:
                     },
                     "schedule": payload["chef_schedule"],
                     "status": "pending_validation",
+                    "kitchen_photos": kitchen_photos_urls,
                 },
             )
         if role == "REPARTIDOR":
@@ -101,6 +114,16 @@ class AuthService:
             self.profile_repo.log_event("login_role_config_error", {"user_id": user.id, "role": role})
             raise LookupError("Rol sin configuracion de acceso.")
         
+        redirect_path = ROLE_REDIRECTS[role]
+
+        if role == "COCINERO":
+            chef_profile = self.profile_repo.get_chef_profile(user.id)
+            if chef_profile:
+                if chef_profile.get("status") == "pending_validation":
+                    redirect_path = "/chef/pending"
+                elif chef_profile.get("status") == "rejected":
+                    redirect_path = "/chef/rejected"
+
         if fcm_token:
             profile = self.user_repo.find_raw_by_email(user.email)
             if profile:
@@ -108,15 +131,21 @@ class AuthService:
                 profile.save(update_fields=['fcm_token'])
             
         self.profile_repo.log_event("login_success", {"user_id": user.id, "role": role})
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+        }
+        if role == "COCINERO":
+            chef_prof = self.profile_repo.get_chef_profile(user.id)
+            if chef_prof:
+                user_data["chef_profile"] = chef_prof
+
         return {
             "role": role,
-            "redirect_path": ROLE_REDIRECTS[role],
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-            },
+            "redirect_path": redirect_path,
+            "user": user_data,
         }
 
     def logout(self, user_id: str):

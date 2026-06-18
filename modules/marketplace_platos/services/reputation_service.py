@@ -16,3 +16,9 @@ class ReputationService:
 
     def create_dish_review(self, user_id: str, dish_id: str, payload: dict):
         return self.repo.create_dish_review(user_id, dish_id, payload)
+
+    def update_review(self, user_id: str, review_id: str, payload: dict):
+        return self.repo.update_review(user_id, review_id, payload)
+
+    def delete_review(self, user_id: str, review_id: str):
+        return self.repo.delete_review(user_id, review_id)
