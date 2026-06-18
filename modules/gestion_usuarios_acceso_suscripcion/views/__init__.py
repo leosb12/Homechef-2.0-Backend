@@ -41,7 +41,17 @@ def register_view(request):
     serializer = RegisterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     try:
-        result = AuthService().complete_registration(serializer.validated_data)
+        validated_data = serializer.validated_data
+        if validated_data.get("role") == "COCINERO":
+            kitchen_photos = request.FILES.getlist('kitchen_photos')
+            if not kitchen_photos or len(kitchen_photos) < 1 or len(kitchen_photos) > 3:
+                return Response({"detail": "Debes adjuntar entre 1 y 3 fotos de tu cocina."}, status=status.HTTP_400_BAD_REQUEST)
+            for photo in kitchen_photos:
+                if not photo.name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    return Response({"detail": "Solo se permiten fotos en formato PNG o JPG."}, status=status.HTTP_400_BAD_REQUEST)
+            validated_data["kitchen_photos"] = kitchen_photos
+
+        result = AuthService().complete_registration(validated_data)
         return Response(result, status=status.HTTP_201_CREATED)
     except ValueError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_409_CONFLICT)
@@ -130,3 +140,60 @@ def change_password(request):
         {"detail": "Las Contraseñas se administran con Supabase Auth desde el cliente."},
         status=status.HTTP_410_GONE,
     )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+def chef_resubmit_view(request):
+    user = request.user
+    if user.role != "COCINERO":
+        return Response({"detail": "Solo los cocineros pueden usar esta acción."}, status=status.HTTP_403_FORBIDDEN)
+    
+    kitchen_photos = request.FILES.getlist('kitchen_photos')
+    if not kitchen_photos or len(kitchen_photos) < 1 or len(kitchen_photos) > 3:
+        return Response({"detail": "Debes adjuntar entre 1 y 3 fotos de tu cocina."}, status=status.HTTP_400_BAD_REQUEST)
+    for photo in kitchen_photos:
+        if not photo.name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            return Response({"detail": "Solo se permiten fotos en formato PNG o JPG."}, status=status.HTTP_400_BAD_REQUEST)
+
+    from modules.storage_uploads.services import StorageUploadService
+    from modules.gestion_usuarios_acceso_suscripcion.repositories.user_repository import UserRepository
+    from modules.gestion_usuarios_acceso_suscripcion.repositories.profile_repository import ProfileRepository
+
+    upload_service = StorageUploadService()
+    user_repo = UserRepository()
+    raw_user = user_repo.find_raw_by_email(user.email)
+    
+    kitchen_photos_urls = []
+    for photo_file in kitchen_photos:
+        upload = upload_service.upload_for_owner(
+            raw_user,
+            photo_file,
+            file_type="kitchen_photo",
+        )
+        kitchen_photos_urls.append(upload.public_url)
+
+    profile_repo = ProfileRepository()
+    current_chef = profile_repo.get_chef_profile(user.id)
+    if not current_chef:
+        return Response({"detail": "Perfil de cocinero no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+    profile_repo.save_chef_profile(
+        user.supabase_user_id,
+        {
+            "business_name": request.data.get("business_name", current_chef.get("business_name", "")),
+            "public_description": request.data.get("public_description", current_chef.get("public_description", "")),
+            "specialties": request.data.get("chef_specialties", current_chef.get("specialties", [])),
+            "location": {
+                "latitude": request.data.get("chef_latitude", current_chef.get("location", {}).get("latitude")),
+                "longitude": request.data.get("chef_longitude", current_chef.get("location", {}).get("longitude")),
+                "address": request.data.get("address", current_chef.get("location", {}).get("address", "")),
+            },
+            "schedule": request.data.get("chef_schedule", current_chef.get("schedule", "")),
+            "status": "pending_validation",
+            "kitchen_photos": kitchen_photos_urls,
+        }
+    )
+
+    return Response({"message": "Solicitud re-enviada con éxito."}, status=status.HTTP_200_OK)

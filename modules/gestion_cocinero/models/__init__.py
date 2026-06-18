@@ -24,6 +24,7 @@ class ChefProfile(models.Model):
     schedule = models.CharField(max_length=255, blank=True)
     profile_image_url = models.TextField(blank=True)
     status = models.CharField(max_length=40, default=STATUS_PENDING)
+    kitchen_photos = models.JSONField(default=list, blank=True)
     ai_subscription_active = models.BooleanField(default=False)
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)

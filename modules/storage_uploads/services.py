@@ -63,6 +63,17 @@ class StorageUploadService:
     def __init__(self):
         self.client = SupabaseStorageClient()
 
+    def _ensure_bucket(self, client: SupabaseStorageClient):
+        url = f"{client.url}/storage/v1/bucket"
+        headers = {
+            "apikey": client.service_key,
+            "Authorization": f"Bearer {client.service_key}",
+            "Content-Type": "application/json",
+        }
+        res = requests.get(f"{url}/{client.bucket}", headers=headers, timeout=10)
+        if res.status_code == 404 or "Bucket not found" in res.text:
+            requests.post(url, headers=headers, json={"id": client.bucket, "name": client.bucket, "public": True}, timeout=10)
+
     def upload_for_user(self, user, file_obj, file_type: str = "general") -> UploadedFile:
         owner = UserProfile.objects.get(supabase_user_id=user.id)
         return self.upload_for_owner(owner, file_obj, file_type=file_type)
@@ -88,6 +99,8 @@ class StorageUploadService:
             size=file_obj.size or len(content),
             file_type=clean_type,
         )
+
+
 
 
 def _safe_filename(value: str) -> str:

@@ -71,6 +71,7 @@ class AdminPlatformService:
                 "city": getattr(c, 'city', None),
                 "address": getattr(c, 'location_address', None),
                 "profile_picture": getattr(c, 'profile_image_url', None),
+                "kitchen_photos": getattr(c, 'kitchen_photos', []),
                 "created_at": c.created_at.isoformat() if hasattr(c, 'created_at') and c.created_at else None,
             })
         return result
