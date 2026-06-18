@@ -21,4 +21,6 @@ urlpatterns = [
     path('api/v1/orders/', include('modules.pedidos_checkout_pagos.urls')),
     path('api/v1/logistics/', include('modules.delivery_logistica.urls')),
     path('api/v1/trust-admin/', include('modules.confianza_administracion_seguridad.urls')),
+    path('api/admin/', include('modules.confianza_administracion_seguridad.urls')),
+    path('api/v1/admin/', include('modules.confianza_administracion_seguridad.urls')),
 ]

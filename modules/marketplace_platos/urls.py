@@ -14,6 +14,7 @@ from .views import (
     remove_favorite,
     review_detail_view,
 )
+from modules.confianza_administracion_seguridad.views import report_publication
 
 urlpatterns = [
     path('', module_home),
@@ -23,6 +24,7 @@ urlpatterns = [
     path('client/dishes/<str:dish_id>/add-to-cart/', add_dish_to_cart),
     path('client/dishes/<str:dish_id>/reviews/', create_dish_review),
     path('client/reviews/<str:review_id>/', review_detail_view),
+    path('client/dishes/<str:dish_id>/report/', report_publication, name='dish-report'),
     path('client/favorites/', favorites_view),
     path('client/favorites/<str:favorite_type>/<str:ref_id>/', remove_favorite),
     path('client/preferences/', preferences_view),

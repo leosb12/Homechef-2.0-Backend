@@ -49,17 +49,26 @@ CHANNEL_LAYERS = {
     }
 }
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'postgres'),
-        'USER': os.getenv('DB_USER', 'postgres'),
-        'PASSWORD': os.getenv('DB_PASSWORD', ''),
-        'HOST': os.getenv('DB_HOST', 'db.pimmweiqnensrevyzvqn.supabase.co'),
-        'PORT': os.getenv('DB_PORT', '5432'),
-        'OPTIONS': {'sslmode': 'require'},
+import sys
+if 'test' in sys.argv:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME', 'postgres'),
+            'USER': os.getenv('DB_USER', 'postgres'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', 'db.pimmweiqnensrevyzvqn.supabase.co'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+            'OPTIONS': {'sslmode': 'require'},
+        }
+    }
 
 # Legacy MongoDB settings are kept only for the one-time migration command.
 MONGODB_URI = os.getenv('MONGODB_URI', '')

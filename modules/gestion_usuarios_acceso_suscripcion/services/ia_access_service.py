@@ -1,8 +1,12 @@
 from django.utils import timezone
 
 from modules.gestion_cocinero.models import ChefProfile
-
-from ..models import AISubscriptionPlan, ChefAISubscription, UserProfile, UsoIA
+from modules.gestion_usuarios_acceso_suscripcion.models import (
+    AISubscriptionPlan,
+    ChefAISubscription,
+    UserProfile,
+    UsoIA,
+)
 
 
 FUNCIONES_IA = {
@@ -23,15 +27,15 @@ FUNCIONES_IA = {
     "demanda_precios": {
         "codigo": "demanda_precios",
         "nombre": "Demanda y precios",
-        "habilitada": False,
-        "implementada": False,
-        "plan_flag": ("production_recommendations_enabled", "pricing_support_enabled"),
+        "habilitada": True,
+        "implementada": True,
+        "plan_flag": "production_recommendations_enabled",
     },
     "publicacion_platos": {
         "codigo": "publicacion_platos",
         "nombre": "Publicacion de platos",
-        "habilitada": False,
-        "implementada": False,
+        "habilitada": True,
+        "implementada": True,
         "plan_flag": "publishing_support_enabled",
     },
 }

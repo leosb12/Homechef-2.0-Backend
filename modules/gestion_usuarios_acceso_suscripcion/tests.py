@@ -409,14 +409,14 @@ class IAAccessServiceTests(TestCase):
     def test_usar_funcion_con_limite_superado(self):
         plan = self._plan(ai_query_limit=1)
         subscription = self._subscription(plan)
-        UsoIA.objects.create(
+        u = UsoIA.objects.create(
             usuario=self.user_profile,
             funcion="asistente_ia",
             permitido=True,
             codigo_resultado="ACCESO_AUTORIZADO",
             mensaje_resultado="Acceso autorizado",
         )
-        UsoIA.objects.filter(id=UsoIA.objects.first().id).update(fecha_intento=subscription.start_date)
+        UsoIA.objects.filter(id=u.id).update(fecha_intento=subscription.start_date)
 
         response = self._post()
 
@@ -432,7 +432,7 @@ class IAAccessServiceTests(TestCase):
     def test_usar_funcion_no_implementada_registra_intento_sin_consumir_limite(self):
         self._subscription(self._plan())
 
-        response = self._post()
+        response = self._post("vision_artificial")
 
         self.assertEqual(response.data["codigo"], "IA_NO_IMPLEMENTADA")
         self.assertEqual(

@@ -1,5 +1,4 @@
 from django.urls import path
-
 from .views import (
     admin_platform_users_collection_view,
     admin_platform_user_toggle_block_view,
@@ -17,6 +16,14 @@ from .views import (
     notifications_collection_view,
     notifications_mark_all_read_view,
     notifications_mark_read_view,
+    list_publications,
+    list_suspicious_publications,
+    detail_publication,
+    approve_publication,
+    reject_publication,
+    hide_publication,
+    request_correction_publication,
+    report_publication,
 )
 
 urlpatterns = [
@@ -36,4 +43,12 @@ urlpatterns = [
     path("chefs/<str:chef_id>/validate/", admin_platform_chef_validate_view),
     path("publications/", admin_platform_publications_view),
     path("publications/<str:dish_id>/action/", admin_platform_publication_action_view),
+    path('publicaciones/calidad/', list_publications, name='admin-quality-list'),
+    path('publicaciones/calidad/sospechosas/', list_suspicious_publications, name='admin-quality-suspicious'),
+    path('publicaciones/calidad/<str:dish_id>/', detail_publication, name='admin-quality-detail'),
+    path('publicaciones/calidad/<str:dish_id>/aprobar/', approve_publication, name='admin-quality-approve'),
+    path('publicaciones/calidad/<str:dish_id>/rechazar/', reject_publication, name='admin-quality-reject'),
+    path('publicaciones/calidad/<str:dish_id>/ocultar/', hide_publication, name='admin-quality-hide'),
+    path('publicaciones/calidad/<str:dish_id>/solicitar-correccion/', request_correction_publication, name='admin-quality-request-correction'),
+    path('publicaciones/calidad/<str:dish_id>/reportar/', report_publication, name='dish-report-alt'),
 ]

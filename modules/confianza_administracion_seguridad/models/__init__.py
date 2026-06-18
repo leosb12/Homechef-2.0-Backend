@@ -1,9 +1,7 @@
 from uuid import uuid4
-
 from django.db import models
-
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
-
+from modules.gestion_cocinero.models import Dish
 
 def uuid4_string():
     return str(uuid4())
@@ -85,3 +83,38 @@ class NotificationDeviceToken(models.Model):
 
     def __str__(self):
         return f"{self.user_id} - {self.platform}"
+
+
+class PublicationReport(models.Model):
+    REASON_CHOICES = (
+        ("imagen_engañosa", "Imagen engañosa"),
+        ("descripcion_falsa", "Descripción falsa"),
+        ("contenido_inapropiado", "Contenido inapropiado"),
+        ("precio_falso", "Precio falso"),
+        ("informacion_incompleta", "Información incompleta"),
+        ("otro", "Otro"),
+    )
+
+    STATUS_PENDIENTE = "pendiente"
+    STATUS_REVISADO = "revisado"
+    STATUS_DESCARTADO = "descartado"
+
+    STATUS_CHOICES = (
+        (STATUS_PENDIENTE, "Pendiente"),
+        (STATUS_REVISADO, "Revisado"),
+        (STATUS_DESCARTADO, "Descartado"),
+    )
+
+    id = models.AutoField(primary_key=True)
+    publication = models.ForeignKey(Dish, on_delete=models.CASCADE, related_name="reports")
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name="submitted_reports")
+    reason = models.CharField(max_length=50, choices=REASON_CHOICES)
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_PENDIENTE)
+
+    class Meta:
+        db_table = "publication_reports"
+
+    def __str__(self):
+        return f"Report {self.id} for {self.publication.name} by {self.user.email}"
