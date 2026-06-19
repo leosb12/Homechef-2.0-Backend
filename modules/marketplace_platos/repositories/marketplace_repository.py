@@ -8,6 +8,7 @@ from modules.gestion_cocinero.models import ChefAvailability, ChefProfile, Daily
 from modules.gestion_cocinero.services.availability_rules import availability_summary, is_open_now
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.marketplace_platos.models import MarketplaceFavorite, MarketplacePreference, MarketplaceReview
+from modules.pedidos_checkout_pagos.models import Order, OrderItem
 from modules.pedidos_checkout_pagos.services import DishStockService, StockValidationError, build_dish_stock_snapshot
 
 
@@ -216,6 +217,7 @@ class MarketplaceRepository:
             "reviews": [
                 {
                     "id": review.id,
+                    "reviewer_id": str(review.reviewer.supabase_user_id) if review.reviewer else "",
                     "author": review.author or "Cliente",
                     "rating": review.rating,
                     "comment": review.comment,
@@ -250,6 +252,7 @@ class MarketplaceRepository:
             "reviews": [
                 {
                     "id": review.id,
+                    "reviewer_id": str(review.reviewer.supabase_user_id) if review.reviewer else "",
                     "author": review.author or "Cliente",
                     "rating": review.rating,
                     "comment": review.comment,
@@ -313,11 +316,21 @@ class MarketplaceRepository:
         if len(comment) > 600:
             raise ValueError("La reseña no puede superar 600 caracteres.")
 
+        # Validate that client has a completed order from this chef
+        has_order = Order.objects.filter(
+            client=user,
+            chef=chef,
+            status__in=[Order.Status.DELIVERED, Order.Status.PICKED_UP]
+        ).exists()
+        if not has_order:
+            raise ValueError("Solo puedes calificar a un cocinero después de recibir un pedido suyo.")
+
         author = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Cliente"
         review = MarketplaceReview.objects.create(
             id=str(uuid4()),
             chef=chef,
             chef_ref_id=str(chef.supabase_user_id),
+            reviewer=user,
             author=author,
             rating=rating,
             comment=comment,
@@ -325,6 +338,7 @@ class MarketplaceRepository:
         )
         return {
             "id": review.id,
+            "reviewer_id": str(review.reviewer.supabase_user_id) if review.reviewer else "",
             "author": review.author,
             "rating": review.rating,
             "comment": review.comment,
@@ -350,6 +364,15 @@ class MarketplaceRepository:
         if len(comment) > 600:
             raise ValueError("La reseña no puede superar 600 caracteres.")
 
+        # Validate that client has a completed order with this dish
+        has_order = OrderItem.objects.filter(
+            order__client=user,
+            dish=dish,
+            order__status__in=[Order.Status.DELIVERED, Order.Status.PICKED_UP]
+        ).exists()
+        if not has_order:
+            raise ValueError("Solo puedes calificar un plato que hayas pedido y recibido previamente.")
+
         author = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Cliente"
         review = MarketplaceReview.objects.create(
             id=str(uuid4()),
@@ -357,6 +380,7 @@ class MarketplaceRepository:
             chef_ref_id=str(dish.chef.supabase_user_id),
             dish=dish,
             dish_ref_id=str(dish.id),
+            reviewer=user,
             author=author,
             rating=rating,
             comment=comment,
@@ -364,11 +388,56 @@ class MarketplaceRepository:
         )
         return {
             "id": review.id,
+            "reviewer_id": str(review.reviewer.supabase_user_id) if review.reviewer else "",
             "author": review.author,
             "rating": review.rating,
             "comment": review.comment,
             "created_at": review.created_at,
         }
+
+    def update_review(self, user_id: str, review_id: str, payload: dict):
+        user = self._require_user(user_id)
+        review = MarketplaceReview.objects.filter(id=str(review_id), deleted_at__isnull=True).first()
+        if not review:
+            raise ValueError("Reseña no encontrada.")
+        if review.reviewer != user:
+            raise ValueError("No tienes permiso para editar esta reseña.")
+
+        rating = int(payload.get("rating", review.rating))
+        comment = str(payload.get("comment", review.comment)).strip()
+        if rating < 1 or rating > 5:
+            raise ValueError("La calificación debe estar entre 1 y 5.")
+        if len(comment) < 4:
+            raise ValueError("La reseña debe tener al menos 4 caracteres.")
+        if len(comment) > 600:
+            raise ValueError("La reseña no puede superar 600 caracteres.")
+
+        review.rating = rating
+        review.comment = comment
+        review.version += 1
+        review.save(update_fields=["rating", "comment", "version", "updated_at"])
+
+        return {
+            "id": review.id,
+            "reviewer_id": str(review.reviewer.supabase_user_id) if review.reviewer else "",
+            "author": review.author,
+            "rating": review.rating,
+            "comment": review.comment,
+            "created_at": review.created_at,
+            "updated_at": review.updated_at,
+        }
+
+    def delete_review(self, user_id: str, review_id: str):
+        user = self._require_user(user_id)
+        review = MarketplaceReview.objects.filter(id=str(review_id), deleted_at__isnull=True).first()
+        if not review:
+            raise ValueError("Reseña no encontrada.")
+        if review.reviewer != user:
+            raise ValueError("No tienes permiso para eliminar esta reseña.")
+
+        review.deleted_at = timezone.now()
+        review.version += 1
+        review.save(update_fields=["deleted_at", "version", "updated_at"])
 
     def favorite_target_exists(self, favorite_type: str, ref_id: str):
         if favorite_type == MarketplaceFavorite.TYPE_DISH:

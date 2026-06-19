@@ -9,6 +9,7 @@ from .views import (
     recover_password_request,
     register_view,
     session_view,
+    chef_resubmit_view,
 )
 
 urlpatterns = [
@@ -21,4 +22,5 @@ urlpatterns = [
     path("recover-password/confirm/", recover_password_confirm),
     path("profile/", profile_view),
     path("profile/change-password/", change_password),
+    path("chef/resubmit/", chef_resubmit_view),
 ]
