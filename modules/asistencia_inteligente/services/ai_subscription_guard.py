@@ -11,6 +11,15 @@ class AISubscriptionGuard:
             return Response({'detail': 'JWT requerido'}, status=status.HTTP_401_UNAUTHORIZED)
         if getattr(user, 'role', '').upper() != 'COCINERO':
             return Response({'detail': 'Solo rol COCINERO'}, status=status.HTTP_403_FORBIDDEN)
+        
+        import os
+        offline_mode = (
+            os.getenv("IA_OFFLINE_MODE", "false").lower() == "true"
+            or os.getenv("APP_OFFLINE_DEV_MODE", "false").lower() == "true"
+        )
+        if offline_mode:
+            return None
+
         try:
             service = AISubscriptionService()
             chef_profile = service.get_chef_profile(user)

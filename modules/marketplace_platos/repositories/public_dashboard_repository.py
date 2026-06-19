@@ -103,7 +103,7 @@ class PublicDashboardRepository:
         for menu in active_menus:
             for item in menu.items.select_related("dish").all():
                 dish = item.dish
-                if dish.status != "published" or dish.deleted_at is not None:
+                if dish.status != "published" or dish.deleted_at is not None or dish.revision_status in ["oculta_temporalmente", "rechazada"]:
                     continue
 
                 menu_status = str(item.status or "available")
@@ -116,6 +116,7 @@ class PublicDashboardRepository:
         published_dishes = (
             Dish.objects.filter(status="published", deleted_at__isnull=True)
             .exclude(id__in=included_dish_ids)
+            .exclude(revision_status__in=["oculta_temporalmente", "rechazada"])
             .select_related("chef", "chef__chef_profile", "chef__availability")
         )
         for dish in published_dishes:

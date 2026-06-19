@@ -117,3 +117,68 @@ class PublicationReport(models.Model):
 
     def __str__(self):
         return f"Report {self.id} for {self.publication.name} by {self.user.email}"
+
+
+class AnalisisVisualPublicacion(models.Model):
+    """
+    Almacena el resultado del análisis visual con IA (Groq Vision) para una publicación.
+    Se crea/actualiza cada vez que el admin solicita un análisis visual.
+    Todos los campos de resultado son nullable para compatibilidad con publicaciones antiguas.
+    """
+    ESTADO_CHOICES = (
+        ("VALIDO", "Válido"),
+        ("SOSPECHOSO", "Sospechoso"),
+        ("RECHAZADO", "Rechazado"),
+        ("ERROR", "Error"),
+    )
+    NIVEL_RIESGO_CHOICES = (
+        ("BAJO", "Bajo"),
+        ("MEDIO", "Medio"),
+        ("ALTO", "Alto"),
+    )
+    ACCION_CHOICES = (
+        ("APROBAR", "Aprobar"),
+        ("REVISAR", "Revisar"),
+        ("OCULTAR", "Ocultar"),
+        ("RECHAZAR", "Rechazar"),
+    )
+
+    id = models.AutoField(primary_key=True)
+    publication = models.OneToOneField(
+        Dish,
+        on_delete=models.CASCADE,
+        related_name="analisis_visual",
+        verbose_name="Publicación"
+    )
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, null=True, blank=True)
+    riesgo = models.IntegerField(null=True, blank=True)
+    nivel_riesgo = models.CharField(max_length=10, choices=NIVEL_RIESGO_CHOICES, null=True, blank=True)
+    es_comida = models.BooleanField(null=True, blank=True)
+    coincide_con_plato = models.BooleanField(null=True, blank=True)
+    coincidencia = models.IntegerField(null=True, blank=True)
+    parece_generada_por_ia = models.BooleanField(null=True, blank=True)
+    probabilidad_ia = models.IntegerField(null=True, blank=True)
+    imagen_generica_o_stock = models.BooleanField(null=True, blank=True)
+    imagen_borrosa_o_baja_calidad = models.BooleanField(null=True, blank=True)
+    contenido_no_apto = models.BooleanField(null=True, blank=True)
+    objetos_detectados = models.JSONField(default=list, blank=True)
+    motivos = models.JSONField(default=list, blank=True)
+    motivos_ia = models.JSONField(default=list, blank=True)
+    recomendacion = models.TextField(blank=True)
+    accion_sugerida = models.CharField(max_length=10, choices=ACCION_CHOICES, null=True, blank=True)
+    proveedor_vision = models.CharField(max_length=50, default="GROQ_VISION", blank=True)
+    proveedor_deteccion_ia = models.CharField(max_length=50, default="NO_CONFIGURADO", blank=True)
+    error_controlado = models.BooleanField(default=False)
+    detalle_error = models.TextField(null=True, blank=True)
+    analizado_en = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "analisis_visual_publicacion"
+        verbose_name = "Análisis Visual de Publicación"
+        verbose_name_plural = "Análisis Visuales de Publicaciones"
+
+    def __str__(self):
+        return f"Análisis visual {self.estado or 'pendiente'} para {self.publication.name}"
+

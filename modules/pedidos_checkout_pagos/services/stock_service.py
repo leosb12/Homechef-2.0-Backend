@@ -57,7 +57,7 @@ def build_dish_stock_snapshot(
         source_available = source_status == Dish.STATUS_PUBLISHED and available_portions > 0
 
     reason_code = ""
-    if dish.deleted_at is not None or dish.status != Dish.STATUS_PUBLISHED:
+    if dish.deleted_at is not None or dish.status != Dish.STATUS_PUBLISHED or dish.revision_status in ["oculta_temporalmente", "rechazada"]:
         reason_code = "dish_unpublished"
     elif not chef_is_available:
         reason_code = "chef_unavailable"

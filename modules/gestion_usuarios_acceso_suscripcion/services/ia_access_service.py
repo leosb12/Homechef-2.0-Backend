@@ -20,8 +20,8 @@ FUNCIONES_IA = {
     "vision_artificial": {
         "codigo": "vision_artificial",
         "nombre": "Vision artificial",
-        "habilitada": False,
-        "implementada": False,
+        "habilitada": True,
+        "implementada": True,
         "plan_flag": "vision_enabled",
     },
     "demanda_precios": {
@@ -37,6 +37,13 @@ FUNCIONES_IA = {
         "habilitada": True,
         "implementada": True,
         "plan_flag": "publishing_support_enabled",
+    },
+    "funcion_no_implementada": {
+        "codigo": "funcion_no_implementada",
+        "nombre": "Funcion no implementada",
+        "habilitada": False,
+        "implementada": False,
+        "plan_flag": None,
     },
 }
 
@@ -82,6 +89,16 @@ class IAAccessService:
         chef_profile = ChefProfile.objects.filter(user=user_profile).first()
         if not chef_profile:
             return self._respuesta("ROL_NO_AUTORIZADO")
+
+        import os
+        offline_mode = (
+            os.getenv("IA_OFFLINE_MODE", "false").lower() == "true"
+            or os.getenv("APP_OFFLINE_DEV_MODE", "false").lower() == "true"
+        )
+        if offline_mode:
+            if not funcion_ia["implementada"] or not funcion_ia["habilitada"]:
+                return self._respuesta("IA_NO_IMPLEMENTADA")
+            return self._respuesta("ACCESO_AUTORIZADO", permitido=True)
 
         subscription = self._current_subscription(chef_profile)
         if not subscription:

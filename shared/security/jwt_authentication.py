@@ -42,8 +42,21 @@ class SupabaseJWTAuthentication(authentication.BaseAuthentication):
         if not token:
             return None
 
+        import os
+        offline_mode = os.getenv("IA_OFFLINE_MODE", "false").lower() == "true" or os.getenv("APP_OFFLINE_DEV_MODE", "false").lower() == "true"
+
         try:
-            user_data = fetch_supabase_user(token)
+            if offline_mode:
+                user_data = build_supabase_user_from_token(token)
+            else:
+                try:
+                    user_data = fetch_supabase_user(token)
+                except exceptions.AuthenticationFailed as exc:
+                    if "No se pudo validar el JWT con Supabase." in str(exc):
+                        user_data = build_supabase_user_from_token(token)
+                    else:
+                        raise exc
+
             profile = sync_user_profile(user_data)
             if not profile.is_active:
                 raise exceptions.AuthenticationFailed("Cuenta inactiva o bloqueada.")

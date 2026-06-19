@@ -181,26 +181,72 @@ class ChefRepository:
         for ing in payload.get("ingredients", []):
             if isinstance(ing, dict):
                 name = ing.get("name")
-                quantity = ing.get("quantity", 1)
+                quantity = float(ing.get("quantity", 1))
                 unit = ing.get("unit", "u")
                 
-                # Buscar o crear el Insumo en el inventario del cocinero
-                inventory_item, created = InventoryItem.objects.get_or_create(
-                    chef=user,
-                    name=name,
-                    defaults={
-                        "unit_of_measure": unit,
-                        "current_stock": 0.0,
-                        "low_stock_threshold": 0.0,
-                        "is_active": True
-                    }
-                )
+                # 1. Intentar buscar un insumo existente con el mismo nombre
+                existing_item = InventoryItem.objects.filter(chef=user, name=name, deleted_at__isnull=True).first()
                 
-                if not created and inventory_item.unit_of_measure != unit:
-                    raise ValueError(
-                        f"Conflicto de unidades: El insumo '{name}' ya existe en tu inventario "
-                        f"medido en '{inventory_item.unit_of_measure}'. Tu receta intentó usar '{unit}'. "
-                        f"Por favor ajusta la receta para usar la misma unidad."
+                if existing_item:
+                    inv_unit = existing_item.unit_of_measure
+                    if inv_unit == unit:
+                        inventory_item = existing_item
+                    else:
+                        # Intentar conversión de unidades
+                        converted = False
+                        
+                        # kg <=> g
+                        if inv_unit == "kg" and unit == "g":
+                            quantity = quantity / 1000.0
+                            unit = "kg"
+                            converted = True
+                        elif inv_unit == "g" and unit == "kg":
+                            quantity = quantity * 1000.0
+                            unit = "g"
+                            converted = True
+                        # L <=> ml
+                        elif inv_unit == "L" and unit == "ml":
+                            quantity = quantity / 1000.0
+                            unit = "L"
+                            converted = True
+                        elif inv_unit == "ml" and unit == "L":
+                            quantity = quantity * 1000.0
+                            unit = "ml"
+                            converted = True
+                        
+                        if converted:
+                            inventory_item = existing_item
+                        else:
+                            # No es convertible (ej. u y g).
+                            # Si el stock del insumo existente es 0 y no se usa en otros platos,
+                            # podemos cambiar su unidad de medida directamente.
+                            other_usages = DishIngredient.objects.filter(inventory_item=existing_item).exclude(dish=dish)
+                            if float(existing_item.current_stock) == 0.0 and not other_usages.exists():
+                                existing_item.unit_of_measure = unit
+                                existing_item.save(update_fields=["unit_of_measure"])
+                                inventory_item = existing_item
+                            else:
+                                # Si no se puede cambiar de unidad, creamos un nuevo insumo con la unidad específica
+                                # para no bloquear al cocinero.
+                                inventory_item, _ = InventoryItem.objects.get_or_create(
+                                    chef=user,
+                                    name=name,
+                                    unit_of_measure=unit,
+                                    defaults={
+                                        "current_stock": 0.0,
+                                        "low_stock_threshold": 0.0,
+                                        "is_active": True
+                                    }
+                                )
+                else:
+                    # Crear nuevo insumo normalmente
+                    inventory_item = InventoryItem.objects.create(
+                        chef=user,
+                        name=name,
+                        unit_of_measure=unit,
+                        current_stock=0.0,
+                        low_stock_threshold=0.0,
+                        is_active=True
                     )
                 
                 # Crear la relación matemática Receta

@@ -52,8 +52,20 @@ class QualityAnalysisService:
         """
         Actualiza los campos de calidad del plato en Django con la respuesta de FastAPI.
         """
-        dish.ia_risk_score = result.get("risk_score")
-        dish.revision_status = result.get("status_suggested", "pendiente_revision_ia")
+        dish.ia_text_risk_score = result.get("risk_score")
+        
+        # Calcular riesgo combinado (texto + visual)
+        visual_risk = 0
+        if hasattr(dish, 'analisis_visual') and dish.analisis_visual and dish.analisis_visual.estado != 'ERROR':
+            visual_risk = dish.analisis_visual.riesgo or 0
+        
+        dish.ia_risk_score = min(100, (dish.ia_text_risk_score or 0) + visual_risk)
+        
+        status_suggested = result.get("status_suggested", "pendiente_revision_ia")
+        if status_suggested == "aprobada":
+            dish.revision_status = "pendiente_revision_ia"
+        else:
+            dish.revision_status = status_suggested
         dish.ia_quality_review_id = result.get("review_id", "")
         dish.ia_quality_reasons = result.get("reasons", [])
         dish.ia_quality_recommendation = result.get("recommendation", "")
@@ -66,6 +78,7 @@ class QualityAnalysisService:
             dish.status = "paused"
             
         dish.save(update_fields=[
+            "ia_text_risk_score",
             "ia_risk_score",
             "revision_status",
             "ia_quality_review_id",
@@ -74,19 +87,27 @@ class QualityAnalysisService:
             "last_quality_analysis_at",
             "status"
         ])
-        logger.info(f"[QualityAnalysisService] Plato {dish.id} sincronizado. Riesgo: {dish.ia_risk_score}, Estado: {dish.revision_status}")
+        logger.info(f"[QualityAnalysisService] Plato {dish.id} sincronizado. Riesgo Texto: {dish.ia_text_risk_score}, Riesgo Combinado: {dish.ia_risk_score}, Estado: {dish.revision_status}")
+
+        try:
+            from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+            NotificationService().notify_admin_suspicious_dish(dish)
+        except Exception as e:
+            logger.exception(f"Error al enviar notificación push de plato sospechoso al admin: {e}")
 
     def handle_quality_service_error(self, dish):
         """
         Fallback si el microservicio de IA falla.
         """
         dish.ia_risk_score = None
+        dish.ia_text_risk_score = None
         dish.revision_status = "requiere_revision"
         dish.ia_quality_reasons = ["No se pudo completar análisis IA. Revisión manual requerida."]
         dish.ia_quality_recommendation = "Por favor, un administrador debe revisar manualmente el contenido de esta publicación."
         dish.last_quality_analysis_at = timezone.now()
         dish.save(update_fields=[
             "ia_risk_score",
+            "ia_text_risk_score",
             "revision_status",
             "ia_quality_reasons",
             "ia_quality_recommendation",

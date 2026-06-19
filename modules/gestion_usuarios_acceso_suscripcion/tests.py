@@ -383,6 +383,14 @@ class IAAccessServiceTests(TestCase):
         self.assertFalse(response.data["permitido"])
         self.assertEqual(UsoIA.objects.count(), 1)
 
+    @patch('os.getenv')
+    def test_usar_funcion_offline_sin_suscripcion(self, mock_getenv):
+        mock_getenv.side_effect = lambda key, default=None: "true" if key in ("IA_OFFLINE_MODE", "APP_OFFLINE_DEV_MODE") else default
+        response = self._post("asistente_ia")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["codigo"], "ACCESO_AUTORIZADO")
+        self.assertTrue(response.data["permitido"])
+
     def test_usar_funcion_con_suscripcion_vencida(self):
         plan = self._plan()
         now = timezone.now()
@@ -432,7 +440,7 @@ class IAAccessServiceTests(TestCase):
     def test_usar_funcion_no_implementada_registra_intento_sin_consumir_limite(self):
         self._subscription(self._plan())
 
-        response = self._post("vision_artificial")
+        response = self._post("funcion_no_implementada")
 
         self.assertEqual(response.data["codigo"], "IA_NO_IMPLEMENTADA")
         self.assertEqual(

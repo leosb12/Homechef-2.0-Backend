@@ -6,7 +6,7 @@ from django.utils import timezone
 from modules.gestion_cocinero.models import Dish
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.marketplace_platos.permissions import IsClienteRole
-from ..models import PublicationReport
+from ..models import PublicationReport, AnalisisVisualPublicacion
 from ..permissions import IsAdminRole
 from ..services.quality_analysis_service import QualityAnalysisService
 
@@ -212,7 +212,231 @@ def serialize_dish_detail(dish):
         "created_at": dish.created_at.isoformat() if dish.created_at else None,
         "updated_at": dish.updated_at.isoformat() if dish.updated_at else None,
         "reports": [serialize_report(r) for r in reports],
+        "analisis_visual": serialize_analisis_visual(getattr(dish, 'analisis_visual', None)),
     }
+
+def serialize_analisis_visual(av):
+    """Serializa el análisis visual si existe, o retorna None."""
+    if av is None:
+        return None
+    return {
+        "estado": av.estado,
+        "riesgo": av.riesgo,
+        "nivel_riesgo": av.nivel_riesgo,
+        "es_comida": av.es_comida,
+        "coincide_con_plato": av.coincide_con_plato,
+        "coincidencia": av.coincidencia,
+        "parece_generada_por_ia": av.parece_generada_por_ia,
+        "probabilidad_ia": av.probabilidad_ia,
+        "imagen_generica_o_stock": av.imagen_generica_o_stock,
+        "imagen_borrosa_o_baja_calidad": av.imagen_borrosa_o_baja_calidad,
+        "contenido_no_apto": av.contenido_no_apto,
+        "objetos_detectados": av.objetos_detectados,
+        "motivos": av.motivos,
+        "motivos_ia": av.motivos_ia,
+        "recomendacion": av.recomendacion,
+        "accion_sugerida": av.accion_sugerida,
+        "proveedor_vision": av.proveedor_vision,
+        "proveedor_deteccion_ia": av.proveedor_deteccion_ia,
+        "error_controlado": av.error_controlado,
+        "detalle_error": av.detalle_error,
+        "analizado_en": av.analizado_en.isoformat() if av.analizado_en else None,
+        "updated_at": av.updated_at.isoformat() if av.updated_at else None,
+    }
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def visual_moderation_view(request, dish_id):
+    """
+    Dispara el análisis de moderación visual real con IA para la imagen de una publicación.
+    Llama al microservicio FastAPI (Groq Vision) y guarda el resultado en AnalisisVisualPublicacion.
+    
+    Si el microservicio falla o hay cualquier error, devuelve un error_controlado=True
+    sin afectar los datos del sistema de control de calidad existente.
+    """
+    import requests as http_requests
+    from django.utils import timezone
+    from django.conf import settings as django_settings
+    
+    try:
+        dish = Dish.objects.get(id=dish_id, deleted_at__isnull=True)
+    except Dish.DoesNotExist:
+        return Response({"detail": "Publicación no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+    
+    if not dish.image_url:
+        return Response(
+            {"detail": "Esta publicación no tiene imagen para analizar."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Preparar ingredientes como lista de strings
+    ingredientes_list = []
+    if isinstance(dish.ingredients, list):
+        for ing in dish.ingredients:
+            if isinstance(ing, dict):
+                ingredientes_list.append(str(ing.get("name", str(ing))))
+            else:
+                ingredientes_list.append(str(ing))
+    
+    # Preparar la categoría desde tags
+    categoria = ""
+    if isinstance(dish.tags, list) and dish.tags:
+        categoria = dish.tags[0]
+    
+    payload = {
+        "publicacion_id": str(dish.id),
+        "imagen_url": dish.image_url,
+        "titulo": dish.name,
+        "descripcion": dish.description or "",
+        "ingredientes": ingredientes_list,
+        "categoria": categoria
+    }
+    
+    ai_service_url = getattr(django_settings, 'AI_SERVICE_URL', 'http://localhost:8001')
+    ai_service_token = getattr(django_settings, 'AI_SERVICE_TOKEN', '')
+    
+    try:
+        response = http_requests.post(
+            f"{ai_service_url}/api/v1/ai/vision/moderacion-plato",
+            json=payload,
+            headers={'X-AI-Service-Token': ai_service_token},
+            timeout=(5, 25),  # (connect_timeout, read_timeout)
+        )
+        response.raise_for_status()
+        result = response.json()
+    except http_requests.exceptions.ConnectionError as e:
+        result = {
+            "estado": "ERROR",
+            "riesgo": 0,
+            "nivel_riesgo": "BAJO",
+            "es_comida": None,
+            "coincide_con_plato": None,
+            "coincidencia": None,
+            "parece_generada_por_ia": None,
+            "probabilidad_ia": None,
+            "imagen_generica_o_stock": None,
+            "imagen_borrosa_o_baja_calidad": None,
+            "contenido_no_apto": None,
+            "objetos_detectados": [],
+            "motivos": [],
+            "motivos_ia": [],
+            "recomendacion": "El microservicio de IA no está disponible. Revisión manual recomendada.",
+            "accion_sugerida": "REVISAR",
+            "proveedores": {"vision_general": "NO_DISPONIBLE", "deteccion_ia": "NO_CONFIGURADO"},
+            "error_controlado": True,
+            "detalle_error": f"No se pudo conectar al microservicio de IA: {str(e)}"
+        }
+    except http_requests.exceptions.Timeout as e:
+        result = {
+            "estado": "ERROR",
+            "riesgo": 0,
+            "nivel_riesgo": "BAJO",
+            "es_comida": None,
+            "coincide_con_plato": None,
+            "coincidencia": None,
+            "parece_generada_por_ia": None,
+            "probabilidad_ia": None,
+            "imagen_generica_o_stock": None,
+            "imagen_borrosa_o_baja_calidad": None,
+            "contenido_no_apto": None,
+            "objetos_detectados": [],
+            "motivos": [],
+            "motivos_ia": [],
+            "recomendacion": "El análisis de imagen tardó demasiado. Revisión manual recomendada.",
+            "accion_sugerida": "REVISAR",
+            "proveedores": {"vision_general": "TIMEOUT", "deteccion_ia": "NO_CONFIGURADO"},
+            "error_controlado": True,
+            "detalle_error": f"Timeout al contactar el microservicio de IA: {str(e)}"
+        }
+    except Exception as e:
+        result = {
+            "estado": "ERROR",
+            "riesgo": 0,
+            "nivel_riesgo": "BAJO",
+            "es_comida": None,
+            "coincide_con_plato": None,
+            "coincidencia": None,
+            "parece_generada_por_ia": None,
+            "probabilidad_ia": None,
+            "imagen_generica_o_stock": None,
+            "imagen_borrosa_o_baja_calidad": None,
+            "contenido_no_apto": None,
+            "objetos_detectados": [],
+            "motivos": [],
+            "motivos_ia": [],
+            "recomendacion": "Error inesperado durante el análisis visual. Revisión manual recomendada.",
+            "accion_sugerida": "REVISAR",
+            "proveedores": {"vision_general": "ERROR", "deteccion_ia": "NO_CONFIGURADO"},
+            "error_controlado": True,
+            "detalle_error": str(e)
+        }
+    
+    # Guardar o actualizar el análisis visual en la base de datos Django
+    proveedores = result.get("proveedores", {})
+    
+    # Parsear fecha de análisis
+    from datetime import datetime as dt_parser
+    analizado_en_str = result.get("fecha_analisis")
+    analizado_en = None
+    if analizado_en_str:
+        try:
+            analizado_en = dt_parser.fromisoformat(analizado_en_str.replace('Z', '+00:00'))
+        except Exception:
+            analizado_en = timezone.now()
+    else:
+        analizado_en = timezone.now()
+    
+    AnalisisVisualPublicacion.objects.update_or_create(
+        publication=dish,
+        defaults={
+            "estado": result.get("estado"),
+            "riesgo": result.get("riesgo"),
+            "nivel_riesgo": result.get("nivel_riesgo"),
+            "es_comida": result.get("es_comida"),
+            "coincide_con_plato": result.get("coincide_con_plato"),
+            "coincidencia": result.get("coincidencia"),
+            "parece_generada_por_ia": result.get("parece_generada_por_ia"),
+            "probabilidad_ia": result.get("probabilidad_ia"),
+            "imagen_generica_o_stock": result.get("imagen_generica_o_stock"),
+            "imagen_borrosa_o_baja_calidad": result.get("imagen_borrosa_o_baja_calidad"),
+            "contenido_no_apto": result.get("contenido_no_apto"),
+            "objetos_detectados": result.get("objetos_detectados") or [],
+            "motivos": result.get("motivos") or [],
+            "motivos_ia": result.get("motivos_ia") or [],
+            "recomendacion": result.get("recomendacion", ""),
+            "accion_sugerida": result.get("accion_sugerida"),
+            "proveedor_vision": proveedores.get("vision_general", "GROQ_VISION"),
+            "proveedor_deteccion_ia": proveedores.get("deteccion_ia", "NO_CONFIGURADO"),
+            "error_controlado": result.get("error_controlado", False),
+            "detalle_error": result.get("detalle_error"),
+            "analizado_en": analizado_en,
+        }
+    )
+    
+    # Calcular y actualizar el riesgo combinado en el plato
+    is_error = result.get("estado") == "ERROR" or result.get("error_controlado", False)
+    visual_risk = 0 if is_error else (result.get("riesgo") or 0)
+    
+    if dish.ia_text_risk_score is None:
+        dish.ia_text_risk_score = dish.ia_risk_score or 0
+        
+    dish.ia_risk_score = min(100, (dish.ia_text_risk_score or 0) + visual_risk)
+    dish.save(update_fields=["ia_text_risk_score", "ia_risk_score"])
+    
+    # Enviar notificación push al administrador si es sospechosa o requiere revisión
+    try:
+        from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+        NotificationService().notify_admin_suspicious_dish(dish)
+    except Exception:
+        pass
+    
+    # Recargar plato y retornar el detalle actualizado
+    dish.refresh_from_db()
+    response_data = serialize_dish_detail(dish)
+    response_data["_visual_analysis_result"] = result
+    return Response(response_data, status=status.HTTP_200_OK)
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsAdminRole])
@@ -293,7 +517,7 @@ def detail_publication(request, dish_id):
 @permission_classes([IsAuthenticated, IsAdminRole])
 def approve_publication(request, dish_id):
     """
-    Aprueba la publicación.
+    Aprueba la publicación (solo categoriza administrativamente).
     """
     try:
         dish = Dish.objects.get(id=dish_id, deleted_at__isnull=True)
@@ -302,13 +526,19 @@ def approve_publication(request, dish_id):
         
     comment = request.data.get("comment", "")
     
+    admin_user = request.user if isinstance(request.user, UserProfile) else None
+    if not admin_user and request.user and getattr(request.user, "id", None):
+        try:
+            admin_user = UserProfile.objects.get(supabase_user_id=request.user.id)
+        except (UserProfile.DoesNotExist, ValueError):
+            pass
+
     dish.revision_status = "aprobada"
-    dish.status = "published"
-    dish.admin_reviewed_by = request.user
+    dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
     dish.admin_review_comment = comment
     dish.save(update_fields=[
-        "revision_status", "status", "admin_reviewed_by", "admin_reviewed_at", "admin_review_comment"
+        "revision_status", "admin_reviewed_by", "admin_reviewed_at", "admin_review_comment"
     ])
     
     # Auditar en MongoDB
@@ -321,7 +551,7 @@ def approve_publication(request, dish_id):
 @permission_classes([IsAuthenticated, IsAdminRole])
 def reject_publication(request, dish_id):
     """
-    Rechaza la publicación (requiere comentario obligatorio).
+    Rechaza la publicación (requiere comentario obligatorio y envía push).
     """
     try:
         dish = Dish.objects.get(id=dish_id, deleted_at__isnull=True)
@@ -332,9 +562,16 @@ def reject_publication(request, dish_id):
     if not comment:
         return Response({"detail": "El comentario de rechazo es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
         
+    admin_user = request.user if isinstance(request.user, UserProfile) else None
+    if not admin_user and request.user and getattr(request.user, "id", None):
+        try:
+            admin_user = UserProfile.objects.get(supabase_user_id=request.user.id)
+        except (UserProfile.DoesNotExist, ValueError):
+            pass
+
     dish.revision_status = "rechazada"
     dish.status = "paused"
-    dish.admin_reviewed_by = request.user
+    dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
     dish.admin_review_comment = comment
     dish.save(update_fields=[
@@ -344,6 +581,23 @@ def reject_publication(request, dish_id):
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "rechazar", comment)
     
+    # Enviar notificación push
+    try:
+        ns = NotificationService()
+        ns._notify_many([
+            ns._build_notification(
+                recipient=dish.chef,
+                category="ADMIN_MODERATION",
+                event_code="PUBLICATION_REJECTED",
+                title="Publicación rechazada",
+                message=f"Tu publicación '{dish.name}' fue rechazada. Motivo: {comment}",
+                metadata={"dish_id": str(dish.id)},
+            )
+        ])
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error al enviar push para rechazo del plato {dish.id}: {e}")
+        
     return Response(serialize_dish_detail(dish), status=status.HTTP_200_OK)
 
 
@@ -358,11 +612,18 @@ def hide_publication(request, dish_id):
     except Dish.DoesNotExist:
         return Response({"detail": "Publicación no encontrada."}, status=status.HTTP_404_NOT_FOUND)
         
-    comment = request.data.get("comment", "")
+    comment = request.data.get("comment", "").strip()
     
+    admin_user = request.user if isinstance(request.user, UserProfile) else None
+    if not admin_user and request.user and getattr(request.user, "id", None):
+        try:
+            admin_user = UserProfile.objects.get(supabase_user_id=request.user.id)
+        except (UserProfile.DoesNotExist, ValueError):
+            pass
+
     dish.revision_status = "oculta_temporalmente"
     dish.status = "paused"
-    dish.admin_reviewed_by = request.user
+    dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
     dish.admin_review_comment = comment
     dish.save(update_fields=[
@@ -372,6 +633,24 @@ def hide_publication(request, dish_id):
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "ocultar", comment)
     
+    # Enviar notificación push si hay comentario
+    if comment:
+        try:
+            ns = NotificationService()
+            ns._notify_many([
+                ns._build_notification(
+                    recipient=dish.chef,
+                    category="ADMIN_MODERATION",
+                    event_code="PUBLICATION_HIDDEN",
+                    title="Publicación ocultada",
+                    message=f"Tu publicación '{dish.name}' fue ocultada temporalmente. Motivo: {comment}",
+                    metadata={"dish_id": str(dish.id)},
+                )
+            ])
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error al enviar push para ocultar plato {dish.id}: {e}")
+            
     return Response(serialize_dish_detail(dish), status=status.HTTP_200_OK)
 
 
@@ -379,7 +658,7 @@ def hide_publication(request, dish_id):
 @permission_classes([IsAuthenticated, IsAdminRole])
 def request_correction_publication(request, dish_id):
     """
-    Solicita corrección al cocinero (requiere comentario obligatorio).
+    Solicita corrección al cocinero (requiere comentario obligatorio y envía push).
     """
     try:
         dish = Dish.objects.get(id=dish_id, deleted_at__isnull=True)
@@ -390,18 +669,41 @@ def request_correction_publication(request, dish_id):
     if not comment:
         return Response({"detail": "El comentario indicando las correcciones es obligatorio."}, status=status.HTTP_400_BAD_REQUEST)
         
+    admin_user = request.user if isinstance(request.user, UserProfile) else None
+    if not admin_user and request.user and getattr(request.user, "id", None):
+        try:
+            admin_user = UserProfile.objects.get(supabase_user_id=request.user.id)
+        except (UserProfile.DoesNotExist, ValueError):
+            pass
+
     dish.revision_status = "requiere_correccion"
-    dish.status = "paused"
-    dish.admin_reviewed_by = request.user
+    dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
     dish.admin_review_comment = comment
     dish.save(update_fields=[
-        "revision_status", "status", "admin_reviewed_by", "admin_reviewed_at", "admin_review_comment"
+        "revision_status", "admin_reviewed_by", "admin_reviewed_at", "admin_review_comment"
     ])
     
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "solicitar_correccion", comment)
     
+    # Enviar notificación push
+    try:
+        ns = NotificationService()
+        ns._notify_many([
+            ns._build_notification(
+                recipient=dish.chef,
+                category="ADMIN_MODERATION",
+                event_code="PUBLICATION_CORRECTION",
+                title="Corrige tu publicación",
+                message=f"El administrador solicita cambios en tu publicación '{dish.name}': {comment}",
+                metadata={"dish_id": str(dish.id)},
+            )
+        ])
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error al enviar push para corrección del plato {dish.id}: {e}")
+        
     return Response(serialize_dish_detail(dish), status=status.HTTP_200_OK)
 
 
@@ -450,8 +752,128 @@ def report_publication(request, dish_id):
             dish.revision_status = "requiere_revision"
             dish.save(update_fields=["revision_status"])
             
+    # Enviar notificación push al administrador si es sospechosa o requiere revisión
+    try:
+        from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+        NotificationService().notify_admin_suspicious_dish(dish)
+    except Exception:
+        pass
+            
     return Response({
         "message": "Reporte registrado exitosamente.",
         "reported_count": dish.reported_count,
         "revision_status": dish.revision_status
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def list_approved_publications(request):
+    """
+    Lista de publicaciones categorizadas como aprobadas.
+    """
+    queryset = Dish.objects.filter(deleted_at__isnull=True, revision_status="aprobada").order_by("-created_at")
+    data = [serialize_dish_summary(dish) for dish in queryset]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def list_correction_publications(request):
+    """
+    Lista de publicaciones en corrección.
+    """
+    queryset = Dish.objects.filter(deleted_at__isnull=True, revision_status="requiere_correccion").order_by("-created_at")
+    data = [serialize_dish_summary(dish) for dish in queryset]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def list_hidden_publications(request):
+    """
+    Lista de publicaciones ocultadas.
+    """
+    queryset = Dish.objects.filter(deleted_at__isnull=True, revision_status="oculta_temporalmente").order_by("-created_at")
+    data = [serialize_dish_summary(dish) for dish in queryset]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def list_rejected_publications(request):
+    """
+    Lista de publicaciones rechazadas.
+    """
+    queryset = Dish.objects.filter(deleted_at__isnull=True, revision_status="rechazada").order_by("-created_at")
+    data = [serialize_dish_summary(dish) for dish in queryset]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated, IsAdminRole])
+def delete_publication_permanent(request, dish_id):
+    """
+    Elimina definitivamente la publicación.
+    Si hay pedidos históricos (OrderItem) asociados, se aplica borrado seguro (soft delete).
+    Si no los hay, se hace un hard delete físico.
+    """
+    try:
+        dish = Dish.objects.get(id=dish_id)
+    except Dish.DoesNotExist:
+        return Response({"detail": "Publicación no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Verificar si el plato está en algún pedido (OrderItem)
+    from modules.pedidos_checkout_pagos.models import OrderItem
+    has_orders = OrderItem.objects.filter(dish=dish).exists()
+
+    if has_orders:
+        # Borrado seguro (soft delete): marcar como borrado, pausar y cambiar estado admin
+        dish.deleted_at = timezone.now()
+        dish.status = "paused"
+        dish.revision_status = "eliminada_definitiva"
+        dish.save(update_fields=["deleted_at", "status", "revision_status"])
+        
+        # Eliminarlo del menú del día si existiera
+        from modules.gestion_cocinero.models import DailyMenuItem
+        DailyMenuItem.objects.filter(dish=dish).delete()
+        
+        # Auditar en MongoDB
+        try:
+            QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "eliminar_definitivo_soft", "Borrado seguro aplicado debido a historial de pedidos.")
+        except Exception:
+            pass
+        
+        return Response({
+            "message": "Se aplicó borrado seguro (soft-delete) para preservar el historial de pedidos referenciados.",
+            "type": "soft"
+        }, status=status.HTTP_200_OK)
+    else:
+        # Hard delete: se puede borrar físicamente porque no hay dependencias protegidas
+        dish_id_str = dish.id
+        
+        # Eliminar del carrito (CartItem) para evitar violación de la restricción PROTECT
+        from modules.pedidos_checkout_pagos.models import CartItem
+        CartItem.objects.filter(dish=dish).delete()
+        
+        # Eliminar favoritos asociados para limpiar referencias
+        from modules.marketplace_platos.models import MarketplaceFavorite
+        MarketplaceFavorite.objects.filter(favorite_type="dish", ref_id=dish_id_str).delete()
+        
+        # Eliminar de DailyMenuItem (cascade on delete lo haría, pero lo hacemos explícito)
+        from modules.gestion_cocinero.models import DailyMenuItem
+        DailyMenuItem.objects.filter(dish=dish).delete()
+        
+        # Borrar el registro físico de Django (cascada borrará también DishIngredient y PublicationReport)
+        dish.delete()
+        
+        # Auditar en MongoDB (se guarda registro de la decisión)
+        try:
+            QualityAnalysisService().register_admin_decision(dish_id_str, request.user.id, "eliminar_definitivo_hard", "Borrado físico completo de la base de datos.")
+        except Exception:
+            pass
+        
+        return Response({
+            "message": "La publicación se eliminó físicamente del sistema de forma definitiva.",
+            "type": "hard"
+        }, status=status.HTTP_200_OK)

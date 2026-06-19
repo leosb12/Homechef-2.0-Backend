@@ -21,7 +21,7 @@ class MarketplaceRepository:
             .select_related("chef", "chef__chef_profile", "chef__availability")
             .first()
         )
-        if not dish or dish.status != "published":
+        if not dish or dish.status != "published" or dish.revision_status in ["oculta_temporalmente", "rechazada"]:
             return None
 
         chef_id = str(dish.chef.supabase_user_id)
@@ -102,18 +102,20 @@ class MarketplaceRepository:
 
     def list_favorites(self, user_id: str):
         user = self._require_user(user_id)
-        return [
-            {
-                "_id": favorite.id,
-                "id": favorite.id,
-                "user_id": str(user.supabase_user_id),
-                "favorite_type": favorite.favorite_type,
-                "ref_id": favorite.ref_id,
-                "target": self._favorite_target(favorite.favorite_type, favorite.ref_id),
-                "created_at": favorite.created_at,
-            }
-            for favorite in MarketplaceFavorite.objects.filter(user=user, deleted_at__isnull=True).order_by("-created_at")
-        ]
+        favorites = []
+        for favorite in MarketplaceFavorite.objects.filter(user=user, deleted_at__isnull=True).order_by("-created_at"):
+            target = self._favorite_target(favorite.favorite_type, favorite.ref_id)
+            if target is not None:
+                favorites.append({
+                    "_id": favorite.id,
+                    "id": favorite.id,
+                    "user_id": str(user.supabase_user_id),
+                    "favorite_type": favorite.favorite_type,
+                    "ref_id": favorite.ref_id,
+                    "target": target,
+                    "created_at": favorite.created_at,
+                })
+        return favorites
 
     def add_favorite(self, user_id: str, favorite_type: str, ref_id: str):
         user = self._require_user(user_id)
@@ -226,9 +228,12 @@ class MarketplaceRepository:
     def get_dish_reviews(self, dish_id: str):
         dish = (
             Dish.objects.filter(id=str(dish_id), status="published", deleted_at__isnull=True)
+            .exclude(revision_status__in=["oculta_temporalmente", "rechazada"])
             .select_related("chef")
             .first()
         )
+        if not dish:
+            return {"rating_avg": 0, "reviews_count": 0, "reviews": []}
         dish_refs = [str(dish_id)]
         query = Q(dish_ref_id__in=dish_refs)
         if dish:
@@ -260,7 +265,7 @@ class MarketplaceRepository:
             return None
         profile = _optional_related(chef, "chef_profile")
         availability = _optional_related(chef, "availability")
-        dishes = Dish.objects.filter(chef=chef, status="published", deleted_at__isnull=True).order_by("-updated_at")
+        dishes = Dish.objects.filter(chef=chef, status="published", deleted_at__isnull=True).exclude(revision_status__in=["oculta_temporalmente", "rechazada"]).order_by("-updated_at")
         return {
             "id": str(chef.supabase_user_id),
             "name": _chef_public_name(chef, profile),
@@ -330,6 +335,7 @@ class MarketplaceRepository:
         user = self._require_user(user_id)
         dish = (
             Dish.objects.filter(id=str(dish_id), status="published", deleted_at__isnull=True)
+            .exclude(revision_status__in=["oculta_temporalmente", "rechazada"])
             .select_related("chef")
             .first()
         )
@@ -366,7 +372,7 @@ class MarketplaceRepository:
 
     def favorite_target_exists(self, favorite_type: str, ref_id: str):
         if favorite_type == MarketplaceFavorite.TYPE_DISH:
-            return Dish.objects.filter(id=str(ref_id), status="published", deleted_at__isnull=True).exists()
+            return Dish.objects.filter(id=str(ref_id), status="published", deleted_at__isnull=True).exclude(revision_status__in=["oculta_temporalmente", "rechazada"]).exists()
         if favorite_type == MarketplaceFavorite.TYPE_CHEF:
             return self._find_chef_by_ref(ref_id) is not None
         return False
@@ -393,6 +399,7 @@ class MarketplaceRepository:
         if favorite_type == MarketplaceFavorite.TYPE_DISH:
             dish = (
                 Dish.objects.filter(id=str(ref_id), deleted_at__isnull=True)
+                .exclude(revision_status__in=["oculta_temporalmente", "rechazada"])
                 .select_related("chef", "chef__chef_profile")
                 .first()
             )

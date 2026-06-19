@@ -388,3 +388,126 @@ class NotificationCenterTests(TestCase):
             "end_time": "23:59",
             "modes": ["delivery", "pickup"],
         }
+
+
+class PublicationModerationTests(TestCase):
+    def setUp(self):
+        self.api = APIClient()
+        self.admin = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="admin@test.com",
+            role=UserProfile.ROLE_ADMIN,
+            first_name="Admin",
+            is_active=True,
+        )
+        self.chef = UserProfile.objects.create(
+            supabase_user_id=uuid4(),
+            email="chef@test.com",
+            role=UserProfile.ROLE_CHEF,
+            first_name="Cocinero",
+            is_active=True,
+        )
+        self.dish = Dish.objects.create(
+            chef=self.chef,
+            name="Salteña Especial",
+            description="Deliciosa salteña tradicional",
+            price=Decimal("10.00"),
+            portions=5,
+            ingredients=["harina", "carne"],
+            tags=["DESAYUNO"],
+            allergens=[],
+            status=Dish.STATUS_PUBLISHED,
+            revision_status="requiere_revision"
+        )
+
+    def test_list_publications_by_category(self):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        
+        # Test approval list
+        self.dish.revision_status = "aprobada"
+        self.dish.save()
+        res = self.api.get("/api/v1/trust-admin/publicaciones/calidad/aprobadas/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 1)
+
+        # Test hidden list
+        self.dish.revision_status = "oculta_temporalmente"
+        self.dish.save()
+        res = self.api.get("/api/v1/trust-admin/publicaciones/calidad/ocultadas/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 1)
+
+    @patch("modules.confianza_administracion_seguridad.services.NotificationService._notify_many")
+    def test_approve_publication_only_categorizes(self, mock_notify):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        res = self.api.post(
+            f"/api/v1/trust-admin/publicaciones/calidad/{self.dish.id}/aprobar/",
+            {"comment": "Excelente calidad"},
+            format="json"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.dish.refresh_from_db()
+        self.assertEqual(self.dish.revision_status, "aprobada")
+        self.assertEqual(self.dish.status, Dish.STATUS_PUBLISHED)
+
+    @patch("modules.confianza_administracion_seguridad.services.NotificationService._notify_many")
+    def test_request_correction_requires_comment(self, mock_notify):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        
+        # Fail with empty comment
+        res = self.api.post(
+            f"/api/v1/trust-admin/publicaciones/calidad/{self.dish.id}/corregir/",
+            {"comment": ""},
+            format="json"
+        )
+        self.assertEqual(res.status_code, 400)
+
+        # Success with comment
+        res = self.api.post(
+            f"/api/v1/trust-admin/publicaciones/calidad/{self.dish.id}/corregir/",
+            {"comment": "Mejorar la descripción"},
+            format="json"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.dish.refresh_from_db()
+        self.assertEqual(self.dish.revision_status, "requiere_correccion")
+        mock_notify.assert_called_once()
+
+    @patch("modules.confianza_administracion_seguridad.services.NotificationService._notify_many")
+    def test_hide_publication_pauses_dish(self, mock_notify):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        res = self.api.post(
+            f"/api/v1/trust-admin/publicaciones/calidad/{self.dish.id}/ocultar/",
+            {"comment": "Imagen no nítida"},
+            format="json"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.dish.refresh_from_db()
+        self.assertEqual(self.dish.revision_status, "oculta_temporalmente")
+        self.assertEqual(self.dish.status, "paused")
+
+    @patch("modules.confianza_administracion_seguridad.services.NotificationService._notify_many")
+    def test_reject_publication_pauses_dish(self, mock_notify):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        res = self.api.post(
+            f"/api/v1/trust-admin/publicaciones/calidad/{self.dish.id}/rechazar/",
+            {"comment": "Contenido fraudulento"},
+            format="json"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.dish.refresh_from_db()
+        self.assertEqual(self.dish.revision_status, "rechazada")
+        self.assertEqual(self.dish.status, "paused")
+
+    def test_delete_publication_permanent(self):
+        self.api.force_authenticate(user=AuthenticatedProfile(self.admin))
+        
+        # Hard delete test
+        dish_id = self.dish.id
+        res = self.api.delete(
+            f"/api/v1/trust-admin/publicaciones/calidad/{dish_id}/eliminar-definitivo/"
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["type"], "hard")
+        self.assertFalse(Dish.objects.filter(id=dish_id).exists())
+

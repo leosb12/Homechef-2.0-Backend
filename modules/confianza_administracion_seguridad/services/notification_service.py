@@ -472,6 +472,43 @@ class NotificationService:
             ]
         )
 
+    def notify_admin_suspicious_dish(self, dish):
+        """
+        Envía una notificación push a todos los administradores si un plato
+        es marcado automáticamente como sospechoso o requiere revisión.
+        """
+        is_suspicious = (
+            (dish.ia_risk_score is not None and dish.ia_risk_score >= 60) or
+            dish.revision_status in ["requiere_revision", "oculta_temporalmente"]
+        )
+        if not is_suspicious:
+            return
+
+        admins = UserProfile.objects.filter(role=UserProfile.ROLE_ADMIN)
+        if not admins.exists():
+            return
+
+        notifications = []
+        status_label = "Requiere revisión"
+        if dish.revision_status == "oculta_temporalmente":
+            status_label = "Sospechosa / Oculta temporalmente"
+        elif dish.ia_risk_score is not None and dish.ia_risk_score >= 60:
+            status_label = f"Sospechosa (Riesgo IA: {dish.ia_risk_score}%)"
+
+        chef_name = self._profile_name(dish.chef)
+        for admin in admins:
+            notifications.append(
+                self._build_notification(
+                    recipient=admin,
+                    category=OperationalNotification.Category.INCIDENT,
+                    event_code="DISH_SUSPICIOUS_ALERT",
+                    title="Alerta de Publicación",
+                    message=f"El plato '{dish.name}' del cocinero {chef_name} ha sido categorizado como: {status_label}.",
+                    metadata={"dish_id": str(dish.id)},
+                )
+            )
+        self._notify_many(notifications)
+
     def _notify_many(self, notifications: Iterable[dict | None]):
         payloads = [row for row in notifications if row and row.get("recipient")]
         for payload in payloads:

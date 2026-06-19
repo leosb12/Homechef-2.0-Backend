@@ -85,6 +85,7 @@ class Dish(models.Model):
     legacy_mongo_id = models.CharField(max_length=128, blank=True, db_index=True)
     revision_status = models.CharField(max_length=40, default="pendiente_revision_ia")
     ia_risk_score = models.IntegerField(null=True, blank=True)
+    ia_text_risk_score = models.IntegerField(null=True, blank=True)
     ia_quality_review_id = models.CharField(max_length=64, blank=True)
     ia_quality_reasons = models.JSONField(default=list, blank=True)
     ia_quality_recommendation = models.TextField(blank=True)

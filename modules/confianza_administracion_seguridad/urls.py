@@ -18,6 +18,12 @@ from .views import (
     hide_publication,
     request_correction_publication,
     report_publication,
+    list_approved_publications,
+    list_correction_publications,
+    list_hidden_publications,
+    list_rejected_publications,
+    delete_publication_permanent,
+    visual_moderation_view,
 )
 
 urlpatterns = [
@@ -34,10 +40,17 @@ urlpatterns = [
 
     path('publicaciones/calidad/', list_publications, name='admin-quality-list'),
     path('publicaciones/calidad/sospechosas/', list_suspicious_publications, name='admin-quality-suspicious'),
+    path('publicaciones/calidad/aprobadas/', list_approved_publications, name='admin-quality-approved'),
+    path('publicaciones/calidad/en-correccion/', list_correction_publications, name='admin-quality-in-correction'),
+    path('publicaciones/calidad/ocultadas/', list_hidden_publications, name='admin-quality-hidden-list'),
+    path('publicaciones/calidad/rechazadas/', list_rejected_publications, name='admin-quality-rejected-list'),
     path('publicaciones/calidad/<str:dish_id>/', detail_publication, name='admin-quality-detail'),
     path('publicaciones/calidad/<str:dish_id>/aprobar/', approve_publication, name='admin-quality-approve'),
     path('publicaciones/calidad/<str:dish_id>/rechazar/', reject_publication, name='admin-quality-reject'),
     path('publicaciones/calidad/<str:dish_id>/ocultar/', hide_publication, name='admin-quality-hide'),
     path('publicaciones/calidad/<str:dish_id>/solicitar-correccion/', request_correction_publication, name='admin-quality-request-correction'),
+    path('publicaciones/calidad/<str:dish_id>/corregir/', request_correction_publication, name='admin-quality-correct'),
+    path('publicaciones/calidad/<str:dish_id>/eliminar-definitivo/', delete_publication_permanent, name='admin-quality-delete-permanent'),
     path('publicaciones/calidad/<str:dish_id>/reportar/', report_publication, name='dish-report-alt'),
+    path('publicaciones/calidad/<str:dish_id>/analizar-imagen-ia/', visual_moderation_view, name='admin-quality-visual-moderation'),
 ]
