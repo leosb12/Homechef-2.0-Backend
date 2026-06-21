@@ -31,6 +31,7 @@ from .views import (
     delete_publication_permanent,
     visual_moderation_view,
 )
+from .views.dynamic_reports import DynamicReportsChatView, DynamicReportsExportView
 
 urlpatterns = [
     path("", module_home),
@@ -64,4 +65,6 @@ urlpatterns = [
     path('publicaciones/calidad/<str:dish_id>/eliminar-definitivo/', delete_publication_permanent, name='admin-quality-delete-permanent'),
     path('publicaciones/calidad/<str:dish_id>/reportar/', report_publication, name='dish-report-alt'),
     path('publicaciones/calidad/<str:dish_id>/analizar-imagen-ia/', visual_moderation_view, name='admin-quality-visual-moderation'),
+    path('dynamic-reports/chat/', DynamicReportsChatView.as_view(), name='dynamic-reports-chat'),
+    path('dynamic-reports/export/', DynamicReportsExportView.as_view(), name='dynamic-reports-export'),
 ]
