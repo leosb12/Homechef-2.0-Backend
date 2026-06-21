@@ -51,7 +51,7 @@ def register_view(request):
                     return Response({"detail": "Solo se permiten fotos en formato PNG o JPG."}, status=status.HTTP_400_BAD_REQUEST)
             validated_data["kitchen_photos"] = kitchen_photos
 
-        result = AuthService().complete_registration(validated_data)
+        result = AuthService().complete_registration(validated_data, request=request)
         return Response(result, status=status.HTTP_201_CREATED)
     except ValueError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_409_CONFLICT)
@@ -62,7 +62,7 @@ def register_view(request):
 def login_view(request):
     try:
         fcm_token = request.data.get('fcm_token')
-        result = AuthService().session(request.user, fcm_token=fcm_token)
+        result = AuthService().session(request.user, fcm_token=fcm_token, request=request)
         return Response(result, status=status.HTTP_200_OK)
     except LookupError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -89,7 +89,7 @@ def session_view(request):
                 "redirect_path": "/register"
             }, status=status.HTTP_200_OK)
         fcm_token = request.data.get('fcm_token') if request.method == 'POST' else None
-        result = AuthService().session(request.user, fcm_token=fcm_token)
+        result = AuthService().session(request.user, fcm_token=fcm_token, request=request)
         return Response(result, status=status.HTTP_200_OK)
     except LookupError as ex:
         return Response({"detail": str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -98,7 +98,7 @@ def session_view(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
-    result = AuthService().logout(request.user.id)
+    result = AuthService().logout(request.user.id, request=request, user=request.user)
     return Response(result, status=status.HTTP_200_OK)
 
 
@@ -129,7 +129,7 @@ def profile_view(request):
 
     serializer = UpdateProfileSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    profile = service.update_profile(request.user, serializer.validated_data)
+    profile = service.update_profile(request.user, serializer.validated_data, request=request)
     return Response(profile, status=status.HTTP_200_OK)
 
 

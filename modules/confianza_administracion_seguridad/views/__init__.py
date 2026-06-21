@@ -28,6 +28,7 @@ from modules.confianza_administracion_seguridad.services.delivery_driver_admin_s
     DeliveryDriverAdminError,
     DeliveryDriverAdminService,
 )
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 
 
 @api_view(["GET"])
@@ -116,6 +117,7 @@ def delivery_driver_status_update_view(request, user_id: str):
             request.user.id,
             user_id,
             serializer.validated_data["approval_status"],
+            request=request,
         )
         return Response(payload, status=status.HTTP_200_OK)
     except DeliveryDriverAdminError as exc:
@@ -176,7 +178,7 @@ def admin_platform_user_toggle_block_view(request, user_id: str):
     if request.user.role != UserProfile.ROLE_ADMIN:
         return Response({"detail": "Se requieren permisos de administrador"}, status=status.HTTP_403_FORBIDDEN)
     try:
-        payload = AdminPlatformService().toggle_user_block(user_id)
+        payload = AdminPlatformService().toggle_user_block(user_id, actor_user_id=request.user.id, request=request)
         return Response(payload, status=status.HTTP_200_OK)
     except AdminPlatformError as exc:
         return Response(_error_body(exc), status=_error_status(exc.code))
@@ -199,7 +201,7 @@ def admin_platform_chef_validate_view(request, chef_id: str):
         return Response({"detail": "Se requieren permisos de administrador"}, status=status.HTTP_403_FORBIDDEN)
     try:
         action = request.data.get("status")
-        payload = AdminPlatformService().validate_chef(chef_id, action)
+        payload = AdminPlatformService().validate_chef(chef_id, action, actor_user_id=request.user.id, request=request)
         return Response(payload, status=status.HTTP_200_OK)
     except AdminPlatformError as exc:
         return Response(_error_body(exc), status=_error_status(exc.code))
@@ -222,7 +224,7 @@ def admin_platform_publication_action_view(request, dish_id: str):
         return Response({"detail": "Se requieren permisos de administrador"}, status=status.HTTP_403_FORBIDDEN)
     try:
         action = request.data.get("action")
-        payload = AdminPlatformService().toggle_publication_action(dish_id, action)
+        payload = AdminPlatformService().toggle_publication_action(dish_id, action, actor_user_id=request.user.id, request=request)
         return Response(payload, status=status.HTTP_200_OK)
     except AdminPlatformError as exc:
         return Response(_error_body(exc), status=_error_status(exc.code))
@@ -316,6 +318,26 @@ def serialize_analisis_visual(av):
         "analizado_en": av.analizado_en.isoformat() if av.analizado_en else None,
         "updated_at": av.updated_at.isoformat() if av.updated_at else None,
     }
+
+
+def _audit_publication_admin_action(request, dish, action, description, old_values=None, new_values=None, metadata=None, severity="info", status_value="success"):
+    AuditService().log_event(
+        event_type="PUBLICATION_ADMIN_REVIEWED",
+        event_category="publications",
+        action=action,
+        entity_type="publication",
+        entity_id=str(dish.id),
+        actor=request.user,
+        target_user_id=str(dish.chef.supabase_user_id) if getattr(dish, "chef", None) else "",
+        target_role=getattr(getattr(dish, "chef", None), "role", ""),
+        description=description,
+        old_values=old_values or {},
+        new_values=new_values or {},
+        metadata=metadata or {},
+        request=request,
+        severity=severity,
+        status=status_value,
+    )
 
 
 @api_view(["POST"])
@@ -496,6 +518,17 @@ def visual_moderation_view(request, dish_id):
         
     dish.ia_risk_score = min(100, (dish.ia_text_risk_score or 0) + visual_risk)
     dish.save(update_fields=["ia_text_risk_score", "ia_risk_score"])
+    _audit_publication_admin_action(
+        request,
+        dish,
+        "failed" if is_error else "viewed",
+        "Administrador ejecuto analisis visual IA de publicacion.",
+        old_values={},
+        new_values={"ia_risk_score": dish.ia_risk_score, "visual_estado": result.get("estado")},
+        metadata={"ai_provider": proveedores, "error": result.get("detalle_error"), "error_controlado": result.get("error_controlado", False)},
+        severity="warning" if is_error else "info",
+        status_value="failed" if is_error else "success",
+    )
     
     # Enviar notificación push al administrador si es sospechosa o requiere revisión
     try:
@@ -606,6 +639,7 @@ def approve_publication(request, dish_id):
         except (UserProfile.DoesNotExist, ValueError):
             pass
 
+    old_values = {"revision_status": dish.revision_status, "status": dish.status}
     dish.revision_status = "aprobada"
     dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
@@ -616,6 +650,15 @@ def approve_publication(request, dish_id):
     
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "aprobar", comment)
+    _audit_publication_admin_action(
+        request,
+        dish,
+        "approved",
+        "Administrador aprobo una publicacion.",
+        old_values=old_values,
+        new_values={"revision_status": dish.revision_status, "status": dish.status},
+        metadata={"comment": comment},
+    )
     
     return Response(serialize_dish_detail(dish), status=status.HTTP_200_OK)
 
@@ -642,6 +685,7 @@ def reject_publication(request, dish_id):
         except (UserProfile.DoesNotExist, ValueError):
             pass
 
+    old_values = {"revision_status": dish.revision_status, "status": dish.status}
     dish.revision_status = "rechazada"
     dish.status = "paused"
     dish.admin_reviewed_by = admin_user
@@ -653,6 +697,16 @@ def reject_publication(request, dish_id):
     
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "rechazar", comment)
+    _audit_publication_admin_action(
+        request,
+        dish,
+        "rejected",
+        "Administrador rechazo una publicacion.",
+        old_values=old_values,
+        new_values={"revision_status": dish.revision_status, "status": dish.status},
+        metadata={"comment": comment},
+        severity="warning",
+    )
     
     # Enviar notificación push
     try:
@@ -694,6 +748,7 @@ def hide_publication(request, dish_id):
         except (UserProfile.DoesNotExist, ValueError):
             pass
 
+    old_values = {"revision_status": dish.revision_status, "status": dish.status}
     dish.revision_status = "oculta_temporalmente"
     dish.status = "paused"
     dish.admin_reviewed_by = admin_user
@@ -705,6 +760,16 @@ def hide_publication(request, dish_id):
     
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "ocultar", comment)
+    _audit_publication_admin_action(
+        request,
+        dish,
+        "blocked",
+        "Administrador oculto temporalmente una publicacion.",
+        old_values=old_values,
+        new_values={"revision_status": dish.revision_status, "status": dish.status},
+        metadata={"comment": comment},
+        severity="warning",
+    )
     
     # Enviar notificación push si hay comentario
     if comment:
@@ -749,6 +814,7 @@ def request_correction_publication(request, dish_id):
         except (UserProfile.DoesNotExist, ValueError):
             pass
 
+    old_values = {"revision_status": dish.revision_status, "status": dish.status}
     dish.revision_status = "requiere_correccion"
     dish.admin_reviewed_by = admin_user
     dish.admin_reviewed_at = timezone.now()
@@ -759,6 +825,16 @@ def request_correction_publication(request, dish_id):
     
     # Auditar en MongoDB
     QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "solicitar_correccion", comment)
+    _audit_publication_admin_action(
+        request,
+        dish,
+        "updated",
+        "Administrador solicito correccion de una publicacion.",
+        old_values=old_values,
+        new_values={"revision_status": dish.revision_status, "status": dish.status},
+        metadata={"comment": comment},
+        severity="warning",
+    )
     
     # Enviar notificación push
     try:
@@ -805,6 +881,20 @@ def report_publication(request, dish_id):
         user=request.user,
         reason=reason,
         comment=comment
+    )
+    AuditService().log_event(
+        event_type="PUBLICATION_REPORTED",
+        event_category="publications",
+        action="updated",
+        entity_type="publication",
+        entity_id=str(dish.id),
+        actor=request.user,
+        target_user_id=str(dish.chef.supabase_user_id),
+        target_role=dish.chef.role,
+        description="Cliente reporto una publicacion.",
+        metadata={"report_id": report.id, "reason": reason, "comment": comment},
+        request=request,
+        severity="warning",
     )
     
     # Incrementar contador de reportes
@@ -899,6 +989,11 @@ def delete_publication_permanent(request, dish_id):
     # Verificar si el plato está en algún pedido (OrderItem)
     from modules.pedidos_checkout_pagos.models import OrderItem
     has_orders = OrderItem.objects.filter(dish=dish).exists()
+    old_values = {
+        "revision_status": dish.revision_status,
+        "status": dish.status,
+        "deleted_at": dish.deleted_at.isoformat() if dish.deleted_at else None,
+    }
 
     if has_orders:
         # Borrado seguro (soft delete): marcar como borrado, pausar y cambiar estado admin
@@ -916,6 +1011,20 @@ def delete_publication_permanent(request, dish_id):
             QualityAnalysisService().register_admin_decision(dish.id, request.user.id, "eliminar_definitivo_soft", "Borrado seguro aplicado debido a historial de pedidos.")
         except Exception:
             pass
+        _audit_publication_admin_action(
+            request,
+            dish,
+            "deleted",
+            "Administrador aplico borrado seguro de publicacion.",
+            old_values=old_values,
+            new_values={
+                "revision_status": dish.revision_status,
+                "status": dish.status,
+                "deleted_at": dish.deleted_at.isoformat() if dish.deleted_at else None,
+            },
+            metadata={"delete_type": "soft", "has_orders": True},
+            severity="critical",
+        )
         
         return Response({
             "message": "Se aplicó borrado seguro (soft-delete) para preservar el historial de pedidos referenciados.",
@@ -924,6 +1033,8 @@ def delete_publication_permanent(request, dish_id):
     else:
         # Hard delete: se puede borrar físicamente porque no hay dependencias protegidas
         dish_id_str = dish.id
+        dish_name = dish.name
+        chef_user = dish.chef
         
         # Eliminar del carrito (CartItem) para evitar violación de la restricción PROTECT
         from modules.pedidos_checkout_pagos.models import CartItem
@@ -939,6 +1050,22 @@ def delete_publication_permanent(request, dish_id):
         
         # Borrar el registro físico de Django (cascada borrará también DishIngredient y PublicationReport)
         dish.delete()
+        AuditService().log_event(
+            event_type="PUBLICATION_DELETED",
+            event_category="publications",
+            action="deleted",
+            entity_type="publication",
+            entity_id=str(dish_id_str),
+            actor=request.user,
+            target_user_id=str(chef_user.supabase_user_id),
+            target_role=chef_user.role,
+            description="Administrador elimino fisicamente una publicacion.",
+            old_values=old_values,
+            new_values={"deleted": True},
+            metadata={"delete_type": "hard", "dish_name": dish_name, "has_orders": False},
+            request=request,
+            severity="critical",
+        )
         
         # Auditar en MongoDB (se guarda registro de la decisión)
         try:

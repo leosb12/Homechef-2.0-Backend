@@ -1,5 +1,6 @@
 from ..repositories.profile_repository import ProfileRepository
 from ..repositories.user_repository import UserRepository
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 from modules.storage_uploads.services import StorageUploadService
 
 ROLE_REDIRECTS = {
@@ -15,7 +16,7 @@ class AuthService:
         self.user_repo = UserRepository()
         self.profile_repo = ProfileRepository()
 
-    def complete_registration(self, payload: dict):
+    def complete_registration(self, payload: dict, request=None):
         role = payload["role"]
         email = payload["email"].lower().strip()
         supabase_user_id = payload["supabase_user_id"]
@@ -102,16 +103,72 @@ class AuthService:
             )
 
         self.profile_repo.log_event("user_profile_completed", {"user_id": str(supabase_user_id), "role": role})
+        raw_user = self.user_repo.find_raw_by_email(email)
+        AuditService().log_event(
+            event_type="USER_REGISTERED",
+            event_category="users",
+            action="created",
+            entity_type="user",
+            entity_id=str(raw_user.id if raw_user else supabase_user_id),
+            actor=raw_user,
+            target_user_id=str(supabase_user_id),
+            target_role=role,
+            description=f"Nuevo usuario registrado con rol {role}.",
+            new_values={"email": email, "role": role, "phone": payload.get("phone", "")},
+            metadata={"registration_channel": "web"},
+            request=request,
+        )
+        if role == "COCINERO":
+            AuditService().log_event(
+                event_type="CHEF_REGISTERED",
+                event_category="chefs",
+                action="created",
+                entity_type="chef_profile",
+                entity_id=str(supabase_user_id),
+                actor=raw_user,
+                target_user_id=str(supabase_user_id),
+                target_role=role,
+                description="Registro de cocinero enviado a validacion administrativa.",
+                metadata={"status": "pending_validation"},
+                request=request,
+            )
+        if role == "REPARTIDOR":
+            AuditService().log_event(
+                event_type="RIDER_REGISTERED",
+                event_category="riders",
+                action="created",
+                entity_type="rider_profile",
+                entity_id=str(supabase_user_id),
+                actor=raw_user,
+                target_user_id=str(supabase_user_id),
+                target_role=role,
+                description="Registro de repartidor enviado a validacion administrativa.",
+                metadata={"approval_status": "recien_registrado"},
+                request=request,
+            )
         return {
             "message": "Perfil registrado correctamente.",
             "role": role,
             "redirect_path": ROLE_REDIRECTS.get(role, "/"),
         }
 
-    def session(self, user, fcm_token=None):
+    def session(self, user, fcm_token=None, request=None):
         role = user.role
         if not role or role not in ROLE_REDIRECTS:
             self.profile_repo.log_event("login_role_config_error", {"user_id": user.id, "role": role})
+            AuditService().log_event(
+                event_type="USER_LOGIN_FAILED",
+                event_category="security",
+                action="failed",
+                entity_type="user",
+                entity_id=str(user.id),
+                actor=user,
+                description="Inicio de sesion fallido por rol sin configuracion.",
+                metadata={"role": role},
+                request=request,
+                severity="warning",
+                status="failed",
+            )
             raise LookupError("Rol sin configuracion de acceso.")
         
         redirect_path = ROLE_REDIRECTS[role]
@@ -131,6 +188,17 @@ class AuthService:
                 profile.save(update_fields=['fcm_token'])
             
         self.profile_repo.log_event("login_success", {"user_id": user.id, "role": role})
+        AuditService().log_event(
+            event_type="ADMIN_LOGIN" if role == "ADMINISTRADOR" else "USER_LOGIN",
+            event_category="security",
+            action="login",
+            entity_type="user",
+            entity_id=str(user.id),
+            actor=user,
+            description="Administrador inicio sesion correctamente." if role == "ADMINISTRADOR" else "Usuario inicio sesion correctamente.",
+            metadata={"redirect_path": redirect_path, "fcm_token_updated": bool(fcm_token)},
+            request=request,
+        )
         user_data = {
             "id": user.id,
             "email": user.email,
@@ -148,6 +216,17 @@ class AuthService:
             "user": user_data,
         }
 
-    def logout(self, user_id: str):
+    def logout(self, user_id: str, request=None, user=None):
         self.profile_repo.log_event("logout", {"user_id": user_id})
+        AuditService().log_event(
+            event_type="USER_LOGOUT",
+            event_category="security",
+            action="logout",
+            entity_type="user",
+            entity_id=str(user_id),
+            actor=user,
+            actor_user_id=str(user_id),
+            description="Sesion finalizada correctamente.",
+            request=request,
+        )
         return {"message": "Sesion finalizada correctamente."}

@@ -3,6 +3,7 @@ from django.utils import timezone
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.gestion_cocinero.models import ChefProfile
 from modules.marketplace_platos.models import Dish
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService, actor_from_user_id
 from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
 from modules.confianza_administracion_seguridad.services.email_service import EmailService
 
@@ -30,14 +31,16 @@ class AdminPlatformService:
             })
         return result
 
-    def toggle_user_block(self, user_id: str):
+    def toggle_user_block(self, user_id: str, actor_user_id: str = "", request=None):
         user = UserProfile.objects.filter(id=user_id).first()
         if not user:
             raise AdminPlatformError("Usuario no encontrado", "user_not_found")
         
+        old_values = {"is_active": user.is_active}
         # Toggle is_active
         user.is_active = not user.is_active
         user.save(update_fields=["is_active", "updated_at"])
+        actor = actor_from_user_id(actor_user_id)
         
         # Notificar
         try:
@@ -50,7 +53,22 @@ class AdminPlatformService:
             EmailService.send_admin_action_alert(user.email, user.first_name, subject, title, message, color)
         except Exception as e:
             logger.error(f"Error notificando bloqueo/desbloqueo a {user.email}: {e}")
-            
+        AuditService().log_event(
+            event_type="USER_UNBLOCKED" if user.is_active else "USER_BLOCKED",
+            event_category="admin",
+            action="unblocked" if user.is_active else "blocked",
+            entity_type="user",
+            entity_id=str(user.id),
+            actor=actor,
+            target_user_id=str(user.supabase_user_id),
+            target_role=user.role,
+            description=f"Administrador {'desbloqueo' if user.is_active else 'bloqueo'} la cuenta de {user.email}.",
+            old_values=old_values,
+            new_values={"is_active": user.is_active},
+            request=request,
+            severity="warning",
+        )
+
         return {
             "id": str(user.id),
             "is_active": user.is_active
@@ -76,7 +94,7 @@ class AdminPlatformService:
             })
         return result
 
-    def validate_chef(self, chef_id: str, action: str):
+    def validate_chef(self, chef_id: str, action: str, actor_user_id: str = "", request=None):
         chef = ChefProfile.objects.filter(id=chef_id).select_related("user").first()
         if not chef:
             raise AdminPlatformError("Perfil de cocinero no encontrado", "chef_not_found")
@@ -84,8 +102,10 @@ class AdminPlatformService:
         if action not in ["approved", "rejected"]:
             raise AdminPlatformError("Acción inválida", "invalid_action")
             
+        old_values = {"status": chef.status}
         chef.status = action
         chef.save(update_fields=["status", "updated_at"])
+        actor = actor_from_user_id(actor_user_id)
         
         # Notificar
         try:
@@ -105,6 +125,22 @@ class AdminPlatformService:
         except Exception as e:
             logger.error(f"Error notificando validación de cocinero a {chef.user.email}: {e}")
             
+        AuditService().log_event(
+            event_type="CHEF_APPROVED" if action == "approved" else "CHEF_REJECTED",
+            event_category="chefs",
+            action="approved" if action == "approved" else "rejected",
+            entity_type="chef_profile",
+            entity_id=str(chef.id),
+            actor=actor,
+            target_user_id=str(chef.user.supabase_user_id),
+            target_role=chef.user.role,
+            description=f"Administrador marco el cocinero como {action}.",
+            old_values=old_values,
+            new_values={"status": chef.status},
+            request=request,
+            severity="info" if action == "approved" else "warning",
+        )
+
         return {
             "id": str(chef.id),
             "status": chef.status
@@ -128,10 +164,15 @@ class AdminPlatformService:
             })
         return result
 
-    def toggle_publication_action(self, dish_id: str, action: str):
+    def toggle_publication_action(self, dish_id: str, action: str, actor_user_id: str = "", request=None):
         dish = Dish.objects.filter(id=dish_id).select_related("chef").first()
         if not dish:
             raise AdminPlatformError("Plato no encontrado", "dish_not_found")
+
+        old_values = {
+            "status": dish.status,
+            "deleted_at": dish.deleted_at.isoformat() if dish.deleted_at else None,
+        }
             
         if action == "pause":
             dish.status = "paused"
@@ -159,6 +200,27 @@ class AdminPlatformService:
                 EmailService.send_admin_action_alert(dish.chef.email, dish.chef.first_name, subject, title, message, color)
             except Exception as e:
                 logger.error(f"Error notificando acción sobre publicación a {dish.chef.email}: {e}")
+
+        actor = actor_from_user_id(actor_user_id)
+        AuditService().log_event(
+            event_type="PUBLICATION_ADMIN_ACTION",
+            event_category="publications",
+            action="deleted" if action == "soft_delete" else ("unblocked" if action == "restore" else "updated"),
+            entity_type="publication",
+            entity_id=str(dish.id),
+            actor=actor,
+            target_user_id=str(dish.chef.supabase_user_id),
+            target_role=dish.chef.role,
+            description=f"Accion administrativa sobre publicacion: {action}.",
+            old_values=old_values,
+            new_values={
+                "status": dish.status,
+                "deleted_at": dish.deleted_at.isoformat() if dish.deleted_at else None,
+            },
+            metadata={"admin_action": action, "dish_name": dish.name},
+            request=request,
+            severity="warning" if action in {"pause", "soft_delete"} else "info",
+        )
 
         return {
             "id": str(dish.id),

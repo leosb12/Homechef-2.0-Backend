@@ -32,6 +32,16 @@ from .views import (
     visual_moderation_view,
 )
 from .views.dynamic_reports import DynamicReportsChatView, DynamicReportsExportView
+from .views.audit import (
+    AdminAuditAIDetailView,
+    AdminAuditAIExportView,
+    AdminAuditAISummaryView,
+    AdminAuditAIView,
+    AdminAuditGeneralDetailView,
+    AdminAuditGeneralExportView,
+    AdminAuditGeneralSummaryView,
+    AdminAuditGeneralView,
+)
 
 urlpatterns = [
     path("", module_home),
@@ -67,4 +77,12 @@ urlpatterns = [
     path('publicaciones/calidad/<str:dish_id>/analizar-imagen-ia/', visual_moderation_view, name='admin-quality-visual-moderation'),
     path('dynamic-reports/chat/', DynamicReportsChatView.as_view(), name='dynamic-reports-chat'),
     path('dynamic-reports/export/', DynamicReportsExportView.as_view(), name='dynamic-reports-export'),
+    path("audit/general/", AdminAuditGeneralView.as_view(), name="admin-audit-general"),
+    path("audit/general/summary/", AdminAuditGeneralSummaryView.as_view(), name="admin-audit-general-summary"),
+    path("audit/general/export/", AdminAuditGeneralExportView.as_view(), name="admin-audit-general-export"),
+    path("audit/general/<int:audit_id>/", AdminAuditGeneralDetailView.as_view(), name="admin-audit-general-detail"),
+    path("audit/ai/", AdminAuditAIView.as_view(), name="admin-audit-ai"),
+    path("audit/ai/summary/", AdminAuditAISummaryView.as_view(), name="admin-audit-ai-summary"),
+    path("audit/ai/export/", AdminAuditAIExportView.as_view(), name="admin-audit-ai-export"),
+    path("audit/ai/<str:event_id>/", AdminAuditAIDetailView.as_view(), name="admin-audit-ai-detail"),
 ]

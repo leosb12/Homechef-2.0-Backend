@@ -1,5 +1,6 @@
 from ..repositories.profile_repository import ProfileRepository
 from ..repositories.user_repository import UserRepository
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 
 
 class ProfileService:
@@ -28,7 +29,8 @@ class ProfileService:
             "delivery_profile": delivery_profile,
         }
 
-    def update_profile(self, user, payload: dict):
+    def update_profile(self, user, payload: dict, request=None):
+        before = self.get_profile(user)
         basic_updates = {}
         if "first_name" in payload:
             basic_updates["first_name"] = payload["first_name"]
@@ -53,6 +55,22 @@ class ProfileService:
         self.profile_repo.save_profile(user.id, profile_updates)
         self.profile_repo.log_event("profile_updated", {"user_id": user.id, "fields": list(payload.keys())})
         fresh_user = self.user_repo.find_by_id(user.id)
+        after = self.get_profile(fresh_user)
+        AuditService().log_event(
+            event_type="USER_PROFILE_UPDATED",
+            event_category="users",
+            action="updated",
+            entity_type="user",
+            entity_id=str(user.id),
+            actor=fresh_user or user,
+            target_user_id=str(getattr(user, "supabase_user_id", user.id)),
+            target_role=getattr(user, "role", ""),
+            description="Usuario actualizo datos personales.",
+            old_values={key: before.get(key) for key in payload.keys() if key in before},
+            new_values={key: after.get(key) for key in payload.keys() if key in after},
+            metadata={"fields": list(payload.keys())},
+            request=request,
+        )
         return self.get_profile(fresh_user)
 
     def change_password(self, user, current_password: str, new_password: str):

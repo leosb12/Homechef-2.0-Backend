@@ -6,6 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from modules.confianza_administracion_seguridad.services import NotificationService
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 from modules.delivery_logistica.models import DeliveryAssignment
 from modules.delivery_logistica.services.delivery_incident_service import DeliveryIncidentService
 from modules.delivery_logistica.services.base_delivery_service import BaseDeliveryService
@@ -931,6 +932,22 @@ class OrderCashService:
             actor_id=str(actor_id),
             metadata={"from_status": from_status, "to_status": to_status},
         )
+        AuditService().log_event(
+            event_type="ORDER_STATUS_CHANGED",
+            event_category="orders",
+            action=self._audit_action_for_order_status(to_status),
+            entity_type="order",
+            entity_id=str(order.id),
+            actor_user_id=str(actor_id),
+            actor_role=actor_role,
+            target_user_id=str(order.client.supabase_user_id),
+            target_role=order.client.role,
+            description=f"Pedido cambio de {from_status} a {to_status}.",
+            old_values={"status": from_status},
+            new_values={"status": to_status},
+            metadata={"notes": notes, "event_code": event_code, "event_label": event_label},
+            severity="warning" if to_status in {Order.Status.CANCELLED, Order.Status.PAYMENT_FAILED, Order.Status.REJECTED} else "info",
+        )
         order.refresh_from_db()
         self._publish_tracking(order)
 
@@ -955,6 +972,20 @@ class OrderCashService:
             actor_role=actor_role,
             actor_id=str(actor.supabase_user_id),
             metadata={"payment_id": payment.id, **metadata},
+        )
+        AuditService().log_event(
+            event_type="PAYMENT_APPROVED",
+            event_category="payments",
+            action="approved",
+            entity_type="payment",
+            entity_id=str(payment.id),
+            actor=actor,
+            target_user_id=str(payment.order.client.supabase_user_id),
+            target_role=payment.order.client.role,
+            description="Pago en efectivo confirmado.",
+            old_values={"status": OrderPayment.Status.PENDING},
+            new_values={"status": payment.status, "amount": str(payment.amount), "method": payment.method},
+            metadata={"order_id": payment.order_id, **(metadata or {})},
         )
         self.receipt_service.ensure_receipt(
             payment.order,
@@ -1297,6 +1328,16 @@ class OrderCashService:
     def _profile_name(self, profile: UserProfile):
         name = f"{profile.first_name} {profile.last_name}".strip()
         return name or profile.full_name or profile.email
+
+    def _audit_action_for_order_status(self, status: str):
+        return {
+            Order.Status.CANCELLED: "cancelled",
+            Order.Status.DELIVERED: "delivered",
+            Order.Status.PICKED_UP: "delivered",
+            Order.Status.REJECTED: "rejected",
+            Order.Status.PAYMENT_FAILED: "failed",
+            Order.Status.OUT_FOR_DELIVERY: "assigned",
+        }.get(status, "updated")
 
     def _parse_uuid(self, value):
         try:

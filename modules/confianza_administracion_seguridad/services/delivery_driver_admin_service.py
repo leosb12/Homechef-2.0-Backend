@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from modules.delivery_logistica.models import DeliveryAssignment
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile, UserProfile
 
 
@@ -32,7 +33,7 @@ class DeliveryDriverAdminService:
             },
         }
 
-    def update_status(self, actor_user_id: str, delivery_user_id: str, next_status: str):
+    def update_status(self, actor_user_id: str, delivery_user_id: str, next_status: str, request=None):
         actor = self._find_user(actor_user_id)
         if not actor or actor.role != UserProfile.ROLE_ADMIN:
             raise DeliveryDriverAdminError("admin_required", "Solo un administrador puede gestionar repartidores.")
@@ -44,6 +45,7 @@ class DeliveryDriverAdminService:
             raise DeliveryDriverAdminError("invalid_status", "Estado de repartidor invalido.")
 
         profile = self._find_delivery_profile(delivery_user_id)
+        old_values = {"approval_status": profile.approval_status, "status_notes": profile.status_notes}
         profile.approval_status = next_status
         profile.status_notes = (
             "Repartidor habilitado por administracion."
@@ -51,6 +53,21 @@ class DeliveryDriverAdminService:
             else "Repartidor suspendido por administracion."
         )
         profile.save(update_fields=["approval_status", "status_notes", "updated_at"])
+        AuditService().log_event(
+            event_type="RIDER_STATUS_CHANGED",
+            event_category="riders",
+            action="approved" if next_status == DeliveryProfile.ApprovalStatus.ACTIVE else "blocked",
+            entity_type="rider_profile",
+            entity_id=str(profile.id),
+            actor=actor,
+            target_user_id=str(profile.user.supabase_user_id),
+            target_role=profile.user.role,
+            description=f"Administrador cambio estado del repartidor a {next_status}.",
+            old_values=old_values,
+            new_values={"approval_status": profile.approval_status, "status_notes": profile.status_notes},
+            request=request,
+            severity="warning" if next_status == DeliveryProfile.ApprovalStatus.SUSPENDED else "info",
+        )
         return {"item": self._serialize(profile)}
 
     def _find_delivery_profile(self, user_id: str):
