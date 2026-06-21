@@ -33,9 +33,12 @@ class DynamicReportsBFFService:
         try:
             raw_data = SQLExecutor.execute(sql_query)
         except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error al ejecutar query dinámico. SQL: {sql_query}\nDetalle: {str(e)}", exc_info=True)
             return {
                 "action": "error",
-                "message": f"Error ejecutando consulta: {str(e)}"
+                "message": "Hubo un problema al procesar los datos de tu consulta. Por favor, intenta de nuevo con otra pregunta o contacta a soporte si persiste."
             }
             
         # 3. Formatear para Recharts enviando los datos a FastAPI
