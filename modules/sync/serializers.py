@@ -1,7 +1,45 @@
 from rest_framework import serializers
 
 
-SYNC_ACTIONS = ("CREATE", "UPDATE", "DELETE")
+SYNC_ACTIONS = (
+    "CREATE",
+    "UPDATE",
+    "DELETE",
+    "ADD_ITEM",
+    "UPDATE_ITEM",
+    "REMOVE_ITEM",
+    "CANCEL",
+    "REPORT_INCIDENT",
+    "ACCEPT",
+    "REJECT",
+    "PREPARING",
+    "READY",
+    "CONFIRM_PICKUP",
+    "PICKUP_NO_SHOW",
+    "EXTEND_RETENTION",
+    "CLOSE_RETENTION",
+    "RESOLVE_INCIDENT",
+    "MARK_READ",
+    "MARK_ALL_READ",
+    "CLAIM",
+    "ARRIVED_CHEF",
+    "PICKED_UP",
+    "DELIVERED",
+    "LOCATION_PING",
+    "REPORT",
+    "RESOLVE",
+)
+
+SERVER_ID_OPTIONAL_ENTITIES = {
+    "chef_profiles",
+    "chef_availability",
+    "daily_menus",
+    "preferences",
+    "client_profiles",
+    "rider_profile",
+    "rider_status",
+    "rider_availability",
+}
 
 
 class SyncOperationInputSerializer(serializers.Serializer):
@@ -16,9 +54,10 @@ class SyncOperationInputSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         action = attrs.get("action")
+        entity = str(attrs.get("entity") or "").strip().lower()
         if action in {"CREATE", "UPDATE"} and "payload" not in attrs:
             raise serializers.ValidationError({"payload": "Payload requerido para CREATE y UPDATE."})
-        if action in {"UPDATE", "DELETE"} and not attrs.get("server_id"):
+        if action in {"UPDATE", "DELETE"} and entity not in SERVER_ID_OPTIONAL_ENTITIES and not attrs.get("server_id"):
             raise serializers.ValidationError({"server_id": "server_id requerido para UPDATE y DELETE."})
         return attrs
 

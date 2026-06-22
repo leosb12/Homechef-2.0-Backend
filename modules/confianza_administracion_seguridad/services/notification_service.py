@@ -7,6 +7,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from modules.confianza_administracion_seguridad.services.audit_service import AuditService
 from modules.confianza_administracion_seguridad.models import NotificationDeviceToken, OperationalNotification
 from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident
 from modules.gestion_cocinero.models import ChefProfile
@@ -584,6 +585,25 @@ class NotificationService:
                 metadata=payload["metadata"],
             )
             self._send_push_if_possible(notification)
+            AuditService().log_event(
+                event_type="NOTIFICATION_SENT",
+                event_category="notifications",
+                action="created",
+                entity_type="notification",
+                entity_id=str(notification.id),
+                target_user_id=str(notification.recipient.supabase_user_id),
+                target_role=notification.recipient.role,
+                description=f"Notificacion enviada: {notification.event_code}.",
+                metadata={
+                    "category": notification.category,
+                    "event_code": notification.event_code,
+                    "order_ref": notification.order_ref,
+                    "assignment_ref": notification.assignment_ref,
+                    "channel": "push" if notification.recipient.notify_push else "in_app",
+                },
+                severity="info",
+                status="success",
+            )
 
     def _build_notification(
         self,

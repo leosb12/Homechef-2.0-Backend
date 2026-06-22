@@ -32,8 +32,28 @@ from .views import (
     visual_moderation_view,
 )
 from .views.dynamic_reports import DynamicReportsChatView, DynamicReportsExportView
+from .views.audit import (
+    AdminAuditAIDetailView,
+    AdminAuditAIExportView,
+    AdminAuditAISummaryView,
+    AdminAuditAIView,
+    AdminAuditGeneralDetailView,
+    AdminAuditGeneralExportView,
+    AdminAuditGeneralSummaryView,
+    AdminAuditGeneralView,
+)
+from .views.sync import (
+    AdminSyncBootstrapView,
+    AdminSyncStatusView,
+    AdminSyncPushView,
+    AdminSyncModuleView,
+)
 
 urlpatterns = [
+    path("sync/bootstrap", AdminSyncBootstrapView.as_view(), name="admin-sync-bootstrap"),
+    path("sync/status", AdminSyncStatusView.as_view(), name="admin-sync-status"),
+    path("sync/push", AdminSyncPushView.as_view(), name="admin-sync-push"),
+    path("sync/module/<str:module_name>", AdminSyncModuleView.as_view(), name="admin-sync-module"),
     path("", module_home),
     path("delivery-orders/active/", delivery_active_orders_collection_view),
     path("delivery-orders/active/<str:order_id>/", delivery_active_order_detail_view),
@@ -67,4 +87,12 @@ urlpatterns = [
     path('publicaciones/calidad/<str:dish_id>/analizar-imagen-ia/', visual_moderation_view, name='admin-quality-visual-moderation'),
     path('dynamic-reports/chat/', DynamicReportsChatView.as_view(), name='dynamic-reports-chat'),
     path('dynamic-reports/export/', DynamicReportsExportView.as_view(), name='dynamic-reports-export'),
+    path("audit/general/", AdminAuditGeneralView.as_view(), name="admin-audit-general"),
+    path("audit/general/summary/", AdminAuditGeneralSummaryView.as_view(), name="admin-audit-general-summary"),
+    path("audit/general/export/", AdminAuditGeneralExportView.as_view(), name="admin-audit-general-export"),
+    path("audit/general/<int:audit_id>/", AdminAuditGeneralDetailView.as_view(), name="admin-audit-general-detail"),
+    path("audit/ai/", AdminAuditAIView.as_view(), name="admin-audit-ai"),
+    path("audit/ai/summary/", AdminAuditAISummaryView.as_view(), name="admin-audit-ai-summary"),
+    path("audit/ai/export/", AdminAuditAIExportView.as_view(), name="admin-audit-ai-export"),
+    path("audit/ai/<str:event_id>/", AdminAuditAIDetailView.as_view(), name="admin-audit-ai-detail"),
 ]

@@ -2,6 +2,7 @@ from uuid import uuid4
 from django.db import models
 from modules.gestion_usuarios_acceso_suscripcion.models import UserProfile
 from modules.gestion_cocinero.models import Dish
+from .audit import AuditLog
 
 def uuid4_string():
     return str(uuid4())

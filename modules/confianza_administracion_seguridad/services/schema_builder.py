@@ -27,7 +27,12 @@ class SchemaBuilder:
                 schema_lines.append(f"CREATE TABLE {table_name} (")
                 
                 for field in model._meta.fields:
-                    field_type = field.get_internal_type()
+                    # Resolviendo tipo real para campos de relación
+                    if field.is_relation and not field.many_to_many and not field.one_to_many:
+                        field_type = field.target_field.get_internal_type()
+                    else:
+                        field_type = field.get_internal_type()
+                        
                     # Simplificamos los tipos para que la IA entienda
                     sql_type = "VARCHAR"
                     if field_type in ['IntegerField', 'BigAutoField', 'AutoField', 'PositiveIntegerField']:
