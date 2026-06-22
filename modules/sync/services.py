@@ -24,6 +24,27 @@ SYNCABLE_ENTITIES = {
     "preferencias": "preferences",
     "reviews": "reviews",
     "resenas": "reviews",
+    "chef_inventory": "chef_inventory",
+    "inventario_cocinero": "chef_inventory",
+    "chef_orders": "chef_orders",
+    "pedidos_cocinero": "chef_orders",
+    "chef_notifications": "chef_notifications",
+    "notificaciones_cocinero": "chef_notifications",
+    "client_profiles": "client_profiles",
+    "perfil_cliente": "client_profiles",
+    "cart": "cart",
+    "client_orders": "client_orders",
+    "rider_profile": "rider_profile",
+    "rider_status": "rider_status",
+    "rider_availability": "rider_availability",
+    "rider_assigned_orders": "rider_assigned_orders",
+    "rider_available_orders": "rider_available_orders",
+    "rider_order_details": "rider_order_details",
+    "rider_tracking": "rider_tracking",
+    "rider_delivery_history": "rider_delivery_history",
+    "rider_notifications": "rider_notifications",
+    "rider_incidents": "rider_incidents",
+    "rider_orders": "rider_orders",
 }
 
 
@@ -58,18 +79,139 @@ class SyncService:
     def get_changes(self, user, last_sync):
         profile = self._require_profile(user)
         changes = {
-            "dishes": [self._dish_to_sync_dict(item) for item in self._changed_dishes(profile, last_sync)],
+            "dishes": [self._dish_to_sync_dict(item) for item in self._changed_dishes(profile, last_sync)] if profile.role in {UserProfile.ROLE_CLIENT, UserProfile.ROLE_CHEF} else [],
             "chef_profiles": [
                 self._chef_profile_to_sync_dict(item) for item in self._changed_chef_profiles(profile, last_sync)
-            ],
+            ] if profile.role == UserProfile.ROLE_CHEF else [],
             "chef_availability": [
                 self._availability_to_sync_dict(item) for item in self._changed_availability(profile, last_sync)
-            ],
-            "daily_menus": [self._daily_menu_to_sync_dict(item) for item in self._changed_daily_menus(profile, last_sync)],
-            "favorites": [self._favorite_to_sync_dict(item) for item in self._changed_favorites(profile, last_sync)],
-            "preferences": [self._preference_to_sync_dict(item) for item in self._changed_preferences(profile, last_sync)],
-            "reviews": [self._review_to_sync_dict(item) for item in self._changed_reviews(profile, last_sync)],
+            ] if profile.role == UserProfile.ROLE_CHEF else [],
+            "daily_menus": [self._daily_menu_to_sync_dict(item) for item in self._changed_daily_menus(profile, last_sync)] if profile.role in {UserProfile.ROLE_CLIENT, UserProfile.ROLE_CHEF} else [],
+            "favorites": [self._favorite_to_sync_dict(item) for item in self._changed_favorites(profile, last_sync)] if profile.role == UserProfile.ROLE_CLIENT else [],
+            "preferences": [self._preference_to_sync_dict(item) for item in self._changed_preferences(profile, last_sync)] if profile.role == UserProfile.ROLE_CLIENT else [],
+            "reviews": [self._review_to_sync_dict(item) for item in self._changed_reviews(profile, last_sync)] if profile.role in {UserProfile.ROLE_CLIENT, UserProfile.ROLE_CHEF} else [],
+            "chef_inventory": [
+                self._inventory_item_to_sync_dict(item) for item in self._changed_chef_inventory(profile, last_sync)
+            ] if profile.role == UserProfile.ROLE_CHEF else [],
+            "chef_orders": [
+                self._chef_order_to_sync_dict(item, profile) for item in self._changed_chef_orders(profile, last_sync)
+            ] if profile.role == UserProfile.ROLE_CHEF else [],
+            "chef_notifications": [
+                self._chef_notification_to_sync_dict(item) for item in self._changed_chef_notifications(profile, last_sync)
+            ] if profile.role == UserProfile.ROLE_CHEF else [],
+            "client_profiles": [
+                self._client_profile_to_sync_dict(profile)
+            ] if profile.role == UserProfile.ROLE_CLIENT and (not last_sync or profile.updated_at > last_sync) else [],
         }
+
+        if profile.role == UserProfile.ROLE_DELIVERY:
+            from modules.delivery_logistica.services.delivery_availability_service import DeliveryAvailabilityService
+            from modules.delivery_logistica.services.delivery_operations_service import DeliveryOperationsService
+            from modules.delivery_logistica.services.delivery_incident_service import DeliveryIncidentService
+            from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+            from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile
+            from modules.delivery_logistica.models import DeliveryAssignment, DeliveryIncident, DeliveryRouteSnapshot
+            
+            avail_service = DeliveryAvailabilityService()
+            avail_status = None
+            try:
+                avail_status = avail_service.get_status(str(profile.supabase_user_id))
+            except Exception:
+                pass
+                
+            rider_prof = DeliveryProfile.objects.filter(user=profile).first()
+            
+            ops_service = DeliveryOperationsService()
+            assigned_orders = []
+            try:
+                assigned_orders = ops_service.list_assigned(str(profile.supabase_user_id))
+            except Exception:
+                pass
+                
+            open_board = []
+            try:
+                open_board = ops_service.list_open_board(str(profile.supabase_user_id))
+            except Exception:
+                pass
+
+            notifications = []
+            try:
+                from modules.confianza_administracion_seguridad.models import OperationalNotification
+                notifications = [
+                    NotificationService()._serialize_notification(n)
+                    for n in self._changed(OperationalNotification.objects.filter(recipient=profile), last_sync)
+                ]
+            except Exception:
+                pass
+                
+            assignments = DeliveryAssignment.objects.filter(delivery_user=profile)
+            if last_sync:
+                assignments = assignments.filter(Q(updated_at__gt=last_sync) | Q(created_at__gt=last_sync))
+            
+            serialized_assignments = []
+            for assignment in assignments:
+                try:
+                    serialized_assignments.append(ops_service.get_detail(str(profile.supabase_user_id), assignment.id))
+                except Exception:
+                    pass
+            
+            incidents = DeliveryIncident.objects.filter(assignment__delivery_user=profile)
+            if last_sync:
+                incidents = incidents.filter(Q(updated_at__gt=last_sync) | Q(created_at__gt=last_sync))
+            
+            serialized_incidents = []
+            for incident in incidents:
+                try:
+                    serialized_incidents.append({
+                        "id": incident.id,
+                        "assignment_id": incident.assignment_id,
+                        "code": incident.code,
+                        "title": incident.title,
+                        "description": incident.description,
+                        "status": incident.status,
+                        "reported_by_role": incident.reported_by_role,
+                        "created_at": self._iso(incident.created_at),
+                        "updated_at": self._iso(incident.updated_at),
+                        "resolved_at": self._iso(incident.resolved_at),
+                        "resolution_notes": incident.resolution_notes,
+                    })
+                except Exception:
+                    pass
+
+            routes = DeliveryRouteSnapshot.objects.filter(assignment__delivery_user=profile)
+            if last_sync:
+                routes = routes.filter(Q(updated_at__gt=last_sync) | Q(created_at__gt=last_sync))
+            serialized_routes = []
+            for r in routes:
+                serialized_routes.append({
+                    "id": r.id,
+                    "assignment_id": r.assignment_id,
+                    "route_kind": r.route_kind,
+                    "provider": r.provider,
+                    "is_current": r.is_current,
+                    "start_latitude": r.start_latitude,
+                    "start_longitude": r.start_longitude,
+                    "end_latitude": r.end_latitude,
+                    "end_longitude": r.end_longitude,
+                    "distance_meters": r.distance_meters,
+                    "duration_seconds": r.duration_seconds,
+                    "polyline": r.polyline,
+                    "updated_at": self._iso(r.updated_at),
+                })
+
+            changes.update({
+                "rider_profile": [self._delivery_profile_to_sync_dict(rider_prof)] if rider_prof and (not last_sync or rider_prof.updated_at > last_sync) else [],
+                "rider_status": [avail_status] if avail_status else [],
+                "rider_availability": [avail_status] if avail_status else [],
+                "rider_assigned_orders": assigned_orders or [],
+                "rider_available_orders": open_board or [],
+                "rider_order_details": serialized_assignments,
+                "rider_tracking": serialized_routes,
+                "rider_delivery_history": [self._delivery_assignment_history_to_dict(a) for a in DeliveryAssignment.objects.filter(delivery_user=profile, status__in=[DeliveryAssignment.Status.DELIVERED, DeliveryAssignment.Status.CANCELLED, DeliveryAssignment.Status.FAILED])],
+                "rider_notifications": notifications,
+                "rider_incidents": serialized_incidents,
+            })
+
         return {
             "changes": changes,
             "deleted": {
@@ -117,6 +259,18 @@ class SyncService:
             "favorites": self._apply_favorite_operation,
             "preferences": self._apply_preference_operation,
             "reviews": self._apply_review_operation,
+            "chef_inventory": self._apply_chef_inventory_operation,
+            "chef_orders": self._apply_chef_orders_operation,
+            "chef_notifications": self._apply_chef_notifications_operation,
+            "client_profiles": self._apply_client_profile_operation,
+            "cart": self._apply_cart_operation,
+            "client_orders": self._apply_client_orders_operation,
+            "rider_profile": self._apply_rider_profile_operation,
+            "rider_status": self._apply_rider_availability_operation,
+            "rider_availability": self._apply_rider_availability_operation,
+            "rider_orders": self._apply_rider_orders_operation,
+            "rider_notifications": self._apply_rider_notifications_operation,
+            "rider_incidents": self._apply_rider_incidents_operation,
         }
         return handlers[entity](profile, operation, last_sync)
 
@@ -663,6 +817,521 @@ class SyncService:
             "created_at": self._iso(review.created_at),
             "updated_at": self._iso(review.updated_at),
             "deleted_at": self._iso(review.deleted_at),
+        }
+
+    def _changed_chef_inventory(self, profile, last_sync):
+        from modules.gestion_cocinero.models import InventoryItem
+        return self._changed(InventoryItem.objects.filter(chef=profile), last_sync)
+
+    def _changed_chef_orders(self, profile, last_sync):
+        from modules.pedidos_checkout_pagos.models import Order
+        return self._changed(Order.objects.filter(chef=profile), last_sync)
+
+    def _changed_chef_notifications(self, profile, last_sync):
+        from modules.confianza_administracion_seguridad.models import OperationalNotification
+        return self._changed(OperationalNotification.objects.filter(recipient=profile), last_sync)
+
+    def _apply_chef_inventory_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.gestion_cocinero.services.inventory_service import InventoryService
+        service = InventoryService()
+        
+        if action == "CREATE":
+            payload.pop("id", None)
+            payload.pop("_id", None)
+            res = service.save_inventory_item(user_id, payload)
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "chef_inventory",
+                "local_id": operation.get("local_id") or "",
+                "server_id": str(res["id"]),
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        elif action == "UPDATE":
+            item_id = operation.get("server_id") or payload.get("id")
+            payload["id"] = item_id
+            res = service.save_inventory_item(user_id, payload)
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "chef_inventory",
+                "local_id": operation.get("local_id") or "",
+                "server_id": str(item_id),
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        elif action == "DELETE":
+            item_id = operation.get("server_id") or payload.get("id")
+            service.delete_inventory_item(user_id, int(item_id))
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "chef_inventory",
+                "local_id": operation.get("local_id") or "",
+                "server_id": str(item_id),
+                "status": SyncOperation.STATUS_SYNCED,
+            }
+        raise ValueError(f"Accion de inventario no soportada: {action}")
+
+    def _apply_chef_orders_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        order_id = payload.get("order_id") or operation.get("server_id")
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.pedidos_checkout_pagos.services import OrderCashService, OrderCashServiceError
+        from modules.delivery_logistica.services.delivery_incident_service import DeliveryIncidentService, DeliveryIncidentError
+        
+        service = OrderCashService()
+        incident_service = DeliveryIncidentService()
+        
+        try:
+            if action == "ACCEPT":
+                res = service.chef_accept_order(user_id, order_id)
+            elif action == "REJECT":
+                res = service.chef_reject_order(user_id, order_id)
+            elif action == "PREPARING":
+                res = service.chef_mark_preparing(user_id, order_id)
+            elif action == "READY":
+                res = service.chef_mark_ready(user_id, order_id)
+            elif action == "CONFIRM_PICKUP":
+                res = service.chef_confirm_pickup(user_id, order_id, payload.get("pickup_code", ""))
+            elif action == "PICKUP_NO_SHOW":
+                res = service.chef_mark_pickup_no_show(user_id, order_id)
+            elif action == "EXTEND_RETENTION":
+                res = service.chef_extend_pickup_retention(user_id, order_id)
+            elif action == "CLOSE_RETENTION":
+                res = service.chef_close_pickup_retention(user_id, order_id)
+            elif action == "RESOLVE_INCIDENT":
+                res = incident_service.resolve_for_chef(user_id, order_id, payload.get("incident_id"), payload)
+            else:
+                raise ValueError(f"Accion de pedido no soportada: {action}")
+                
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "chef_orders",
+                "local_id": operation.get("local_id") or "",
+                "server_id": order_id,
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        except (OrderCashServiceError, DeliveryIncidentError) as exc:
+            raise ValueError(str(exc))
+
+    def _apply_chef_notifications_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.confianza_administracion_seguridad.services.notification_service import NotificationService, NotificationServiceError
+        service = NotificationService()
+        
+        try:
+            if action == "MARK_READ":
+                notification_id = payload.get("notification_id") or operation.get("server_id")
+                res = service.mark_as_read(user_id, notification_id)
+            elif action == "MARK_ALL_READ":
+                res = service.mark_all_as_read(user_id)
+            else:
+                raise ValueError(f"Accion de notificacion no soportada: {action}")
+                
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "chef_notifications",
+                "local_id": operation.get("local_id") or "",
+                "server_id": operation.get("server_id") or "",
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        except NotificationServiceError as exc:
+            raise ValueError(str(exc))
+
+    def _inventory_item_to_sync_dict(self, item):
+        from django.utils import timezone
+        return {
+            "id": item.id,
+            "_id": item.id,
+            "entity": "chef_inventory",
+            "name": item.name,
+            "unit_of_measure": item.unit_of_measure,
+            "current_stock": float(item.current_stock),
+            "low_stock_threshold": float(item.low_stock_threshold),
+            "expiration_date": item.expiration_date.isoformat() if item.expiration_date else None,
+            "is_active": item.is_active,
+            "status": "expired" if (item.expiration_date and item.expiration_date < timezone.localdate()) else ("low_stock" if item.current_stock <= item.low_stock_threshold else "ok"),
+            "created_at": self._iso(item.created_at),
+            "updated_at": self._iso(item.updated_at),
+            "deleted_at": self._iso(item.deleted_at),
+        }
+
+    def _chef_order_to_sync_dict(self, order, profile):
+        from modules.pedidos_checkout_pagos.services import OrderCashService
+        serialized = OrderCashService()._serialize_order(order, "COCINERO", str(profile.supabase_user_id))
+        return {
+            "id": order.id,
+            "_id": order.id,
+            "entity": "chef_orders",
+            "data": serialized,
+            "created_at": self._iso(order.created_at),
+            "updated_at": self._iso(order.updated_at),
+            "deleted_at": None,
+        }
+
+    def _chef_notification_to_sync_dict(self, notification):
+        from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+        serialized = NotificationService()._serialize_notification(notification)
+        return {
+            "id": notification.id,
+            "_id": notification.id,
+            "entity": "chef_notifications",
+            "data": serialized,
+            "created_at": self._iso(notification.created_at),
+            "updated_at": self._iso(notification.updated_at),
+            "deleted_at": None,
+        }
+
+    def _apply_client_profile_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        if action == "UPDATE":
+            payload = operation.get("payload") or {}
+            self._assign_fields(
+                profile,
+                payload,
+                (
+                    "first_name",
+                    "last_name",
+                    "full_name",
+                    "avatar_url",
+                    "phone",
+                    "address",
+                    "location_latitude",
+                    "location_longitude",
+                    "notify_gmail",
+                    "notify_push",
+                ),
+            )
+            saved = self._save_model(profile)
+            return self._synced_result(operation, saved)
+        raise ValueError(f"Accion de perfil de cliente no soportada: {action}")
+
+    def _client_profile_to_sync_dict(self, profile: UserProfile):
+        return {
+            "id": profile.id,
+            "_id": profile.id,
+            "entity": "client_profiles",
+            "first_name": profile.first_name,
+            "last_name": profile.last_name,
+            "full_name": profile.full_name,
+            "avatar_url": profile.avatar_url,
+            "phone": profile.phone,
+            "address": profile.address,
+            "location_latitude": profile.location_latitude,
+            "location_longitude": profile.location_longitude,
+            "notify_gmail": profile.notify_gmail,
+            "notify_push": profile.notify_push,
+            "version": 1,
+            "created_at": self._iso(profile.created_at),
+            "updated_at": self._iso(profile.updated_at),
+            "deleted_at": None,
+        }
+
+    def _apply_cart_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.pedidos_checkout_pagos.services.cart_service import CartService, CartServiceError
+        service = CartService()
+        
+        try:
+            if action == "ADD_ITEM":
+                res = service.add_item(
+                    user_id=user_id,
+                    dish_id=payload.get("dish_id") or payload.get("dishId"),
+                    quantity=int(payload.get("quantity", 1)),
+                    fulfillment_type=payload.get("fulfillment_type") or payload.get("fulfillmentType") or "",
+                )
+                return {
+                    "operation_id": str(operation["operation_id"]),
+                    "entity": "cart",
+                    "local_id": operation.get("local_id") or "",
+                    "server_id": res["item"]["id"],
+                    "status": SyncOperation.STATUS_SYNCED,
+                    "result": res,
+                }
+            
+            item_id = operation.get("server_id") or payload.get("itemId") or payload.get("id")
+            
+            from modules.pedidos_checkout_pagos.models import CartItem, Cart
+            cart_item = None
+            if item_id and not str(item_id).startswith("temp-"):
+                cart_item = CartItem.objects.filter(
+                    id=str(item_id),
+                    cart__client=profile,
+                    cart__status=Cart.Status.ACTIVE
+                ).first()
+                
+            if not cart_item and (payload.get("dish_id") or payload.get("dishId")):
+                dish_id = payload.get("dish_id") or payload.get("dishId")
+                cart_item = CartItem.objects.filter(
+                    dish_id=str(dish_id),
+                    cart__client=profile,
+                    cart__status=Cart.Status.ACTIVE
+                ).first()
+                
+            if action == "UPDATE_ITEM":
+                if not cart_item:
+                    res = service.add_item(
+                        user_id=user_id,
+                        dish_id=payload.get("dish_id") or payload.get("dishId"),
+                        quantity=int(payload.get("quantity", 1)),
+                        fulfillment_type=payload.get("fulfillment_type") or payload.get("fulfillmentType") or "",
+                    )
+                else:
+                    res = service.update_item(
+                        user_id=user_id,
+                        item_id=cart_item.id,
+                        quantity=int(payload.get("quantity", 1)),
+                        fulfillment_type=payload.get("fulfillment_type") or payload.get("fulfillmentType") or "",
+                    )
+                return {
+                    "operation_id": str(operation["operation_id"]),
+                    "entity": "cart",
+                    "local_id": operation.get("local_id") or "",
+                    "server_id": res["item"]["id"],
+                    "status": SyncOperation.STATUS_SYNCED,
+                    "result": res,
+                }
+                
+            elif action == "REMOVE_ITEM":
+                if not cart_item:
+                    return {
+                        "operation_id": str(operation["operation_id"]),
+                        "entity": "cart",
+                        "local_id": operation.get("local_id") or "",
+                        "server_id": str(item_id),
+                        "status": SyncOperation.STATUS_SYNCED,
+                    }
+                res = service.remove_item(user_id=user_id, item_id=cart_item.id)
+                return {
+                    "operation_id": str(operation["operation_id"]),
+                    "entity": "cart",
+                    "local_id": operation.get("local_id") or "",
+                    "server_id": cart_item.id,
+                    "status": SyncOperation.STATUS_SYNCED,
+                    "result": res,
+                }
+            else:
+                raise ValueError(f"Accion de carrito no soportada: {action}")
+        except CartServiceError as exc:
+            raise ValueError(str(exc))
+
+    def _apply_client_orders_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.pedidos_checkout_pagos.services import OrderCashService, OrderCashServiceError
+        from modules.delivery_logistica.services.delivery_incident_service import DeliveryIncidentService, DeliveryIncidentError
+        
+        service = OrderCashService()
+        incident_service = DeliveryIncidentService()
+        
+        try:
+            if action == "CANCEL":
+                order_id = payload.get("order_id") or operation.get("server_id")
+                res = service.cancel_client_order(user_id, order_id)
+            elif action == "REPORT_INCIDENT":
+                order_id = payload.get("order_id") or operation.get("server_id")
+                incident_data = {
+                    "code": payload.get("code"),
+                    "description": payload.get("description"),
+                }
+                res = incident_service.create_for_client(user_id, order_id, incident_data)
+            else:
+                raise ValueError(f"Accion de pedido cliente no soportada: {action}")
+                
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "client_orders",
+                "local_id": operation.get("local_id") or "",
+                "server_id": order_id,
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        except (OrderCashServiceError, DeliveryIncidentError) as exc:
+            raise ValueError(str(exc))
+
+    def _apply_rider_profile_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        from modules.gestion_usuarios_acceso_suscripcion.models import DeliveryProfile
+        rider_prof = DeliveryProfile.objects.filter(user=profile).first()
+        if action == "UPDATE":
+            if not rider_prof:
+                raise ValueError("Perfil de repartidor no encontrado.")
+            self._assign_fields(
+                rider_prof,
+                payload,
+                ("vehicle_type", "vehicle_brand", "vehicle_model", "vehicle_plate"),
+            )
+            saved = self._save_model(rider_prof)
+            return self._synced_result(operation, saved)
+        raise ValueError("Acción no soportada para perfil de rider.")
+
+    def _apply_rider_availability_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        from modules.delivery_logistica.services.delivery_availability_service import DeliveryAvailabilityService
+        service = DeliveryAvailabilityService()
+        if action == "UPDATE":
+            manual_status = payload.get("manual_status")
+            res = service.update_manual_status(str(profile.supabase_user_id), manual_status)
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "rider_availability",
+                "local_id": operation.get("local_id") or "",
+                "server_id": str(profile.supabase_user_id),
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        raise ValueError("Acción no soportada para disponibilidad de rider.")
+
+    def _apply_rider_orders_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        assignment_id = payload.get("assignment_id") or operation.get("server_id")
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.delivery_logistica.services.delivery_operations_service import DeliveryOperationsService
+        service = DeliveryOperationsService()
+        
+        if action == "ACCEPT":
+            res = service.accept_assignment(user_id, assignment_id)
+        elif action == "CLAIM":
+            res = service.claim_open_board_assignment(user_id, assignment_id)
+        elif action == "REJECT":
+            res = service.reject_assignment(user_id, assignment_id)
+        elif action == "CANCEL":
+            res = service.cancel_assignment(user_id, assignment_id)
+        elif action == "ARRIVED_CHEF":
+            res = service.arrived_chef(user_id, assignment_id)
+        elif action == "PICKED_UP":
+            res = service.picked_up(user_id, assignment_id)
+        elif action == "DELIVERED":
+            res = service.delivered(user_id, assignment_id)
+        elif action == "LOCATION_PING":
+            from modules.delivery_logistica.services.delivery_tracking_service import DeliveryTrackingService
+            tracking_service = DeliveryTrackingService()
+            res = tracking_service.record_delivery_location(user_id, assignment_id, payload)
+        else:
+            raise ValueError(f"Acción no soportada para pedido de rider: {action}")
+            
+        return {
+            "operation_id": str(operation["operation_id"]),
+            "entity": "rider_orders",
+            "local_id": operation.get("local_id") or "",
+            "server_id": assignment_id,
+            "status": SyncOperation.STATUS_SYNCED,
+            "result": res,
+        }
+
+    def _apply_rider_notifications_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.confianza_administracion_seguridad.services.notification_service import NotificationService
+        service = NotificationService()
+        
+        if action == "MARK_READ":
+            notification_id = payload.get("notification_id") or operation.get("server_id")
+            res = service.mark_as_read(user_id, notification_id)
+        elif action == "MARK_ALL_READ":
+            res = service.mark_all_as_read(user_id)
+        else:
+            raise ValueError(f"Acción no soportada para notificaciones de rider: {action}")
+            
+        return {
+            "operation_id": str(operation["operation_id"]),
+            "entity": "rider_notifications",
+            "local_id": operation.get("local_id") or "",
+            "server_id": operation.get("server_id") or "",
+            "status": SyncOperation.STATUS_SYNCED,
+            "result": res,
+        }
+
+    def _apply_rider_incidents_operation(self, profile: UserProfile, operation: dict, last_sync):
+        action = operation["action"]
+        payload = operation.get("payload") or {}
+        assignment_id = payload.get("assignment_id")
+        user_id = str(profile.supabase_user_id)
+        
+        from modules.delivery_logistica.services.delivery_incident_service import DeliveryIncidentService
+        service = DeliveryIncidentService()
+        
+        if action == "REPORT":
+            incident_data = {
+                "code": payload.get("code"),
+                "description": payload.get("description"),
+            }
+            res = service.create_for_delivery(user_id, assignment_id, incident_data)
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "rider_incidents",
+                "local_id": operation.get("local_id") or "",
+                "server_id": res.get("id"),
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        elif action == "RESOLVE":
+            incident_id = payload.get("incident_id")
+            resolve_data = {
+                "resolution_notes": payload.get("resolution_notes"),
+            }
+            res = service.resolve_for_delivery(user_id, assignment_id, incident_id, resolve_data)
+            return {
+                "operation_id": str(operation["operation_id"]),
+                "entity": "rider_incidents",
+                "local_id": operation.get("local_id") or "",
+                "server_id": incident_id,
+                "status": SyncOperation.STATUS_SYNCED,
+                "result": res,
+            }
+        raise ValueError(f"Acción no soportada para incidencias de rider: {action}")
+
+    def _delivery_profile_to_sync_dict(self, profile):
+        if not profile:
+            return None
+        return {
+            "id": profile.id,
+            "entity": "rider_profile",
+            "user_id": str(profile.user.supabase_user_id),
+            "vehicle_type": profile.vehicle_type,
+            "vehicle_brand": profile.vehicle_brand,
+            "vehicle_model": profile.vehicle_model,
+            "vehicle_plate": profile.vehicle_plate,
+            "vehicle_front_image_url": profile.vehicle_front_image_url,
+            "vehicle_rear_image_url": profile.vehicle_rear_image_url,
+            "approval_status": profile.approval_status,
+            "availability_manual_status": profile.availability_manual_status,
+            "availability_effective_status": profile.availability_effective_status,
+            "created_at": self._iso(profile.created_at),
+            "updated_at": self._iso(profile.updated_at),
+        }
+
+    def _delivery_assignment_history_to_dict(self, assignment):
+        return {
+            "id": assignment.id,
+            "order_id": assignment.order_id,
+            "status": assignment.status,
+            "assigned_at": self._iso(assignment.assigned_at),
+            "picked_up_at": self._iso(assignment.picked_up_at),
+            "delivered_at": self._iso(assignment.delivered_at),
+            "created_at": self._iso(assignment.created_at),
+            "updated_at": self._iso(assignment.updated_at),
         }
 
     def _server_id(self, item):

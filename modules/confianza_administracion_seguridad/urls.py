@@ -42,8 +42,18 @@ from .views.audit import (
     AdminAuditGeneralSummaryView,
     AdminAuditGeneralView,
 )
+from .views.sync import (
+    AdminSyncBootstrapView,
+    AdminSyncStatusView,
+    AdminSyncPushView,
+    AdminSyncModuleView,
+)
 
 urlpatterns = [
+    path("sync/bootstrap", AdminSyncBootstrapView.as_view(), name="admin-sync-bootstrap"),
+    path("sync/status", AdminSyncStatusView.as_view(), name="admin-sync-status"),
+    path("sync/push", AdminSyncPushView.as_view(), name="admin-sync-push"),
+    path("sync/module/<str:module_name>", AdminSyncModuleView.as_view(), name="admin-sync-module"),
     path("", module_home),
     path("delivery-orders/active/", delivery_active_orders_collection_view),
     path("delivery-orders/active/<str:order_id>/", delivery_active_order_detail_view),

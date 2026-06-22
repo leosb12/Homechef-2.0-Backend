@@ -46,6 +46,13 @@ class AdminAuditAIView(APIView):
         return Response(AIAuditService().list_events(request.query_params), status=status.HTTP_200_OK)
 
 
+class AdminAuditAICollectionsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        return Response(AIAuditService().list_collections(), status=status.HTTP_200_OK)
+
+
 class AdminAuditAISummaryView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
