@@ -33,6 +33,7 @@ from .views import (
 )
 from .views.dynamic_reports import DynamicReportsChatView, DynamicReportsExportView
 from .views.audit import (
+    AdminAuditAICollectionsView,
     AdminAuditAIDetailView,
     AdminAuditAIExportView,
     AdminAuditAISummaryView,
@@ -92,7 +93,10 @@ urlpatterns = [
     path("audit/general/export/", AdminAuditGeneralExportView.as_view(), name="admin-audit-general-export"),
     path("audit/general/<int:audit_id>/", AdminAuditGeneralDetailView.as_view(), name="admin-audit-general-detail"),
     path("audit/ai/", AdminAuditAIView.as_view(), name="admin-audit-ai"),
+    path("audit/ai/events/", AdminAuditAIView.as_view(), name="admin-audit-ai-events-alias"),
+    path("audit/ai/collections/", AdminAuditAICollectionsView.as_view(), name="admin-audit-ai-collections"),
     path("audit/ai/summary/", AdminAuditAISummaryView.as_view(), name="admin-audit-ai-summary"),
     path("audit/ai/export/", AdminAuditAIExportView.as_view(), name="admin-audit-ai-export"),
     path("audit/ai/<str:event_id>/", AdminAuditAIDetailView.as_view(), name="admin-audit-ai-detail"),
+    path("audit/ai/events/<str:event_id>/", AdminAuditAIDetailView.as_view(), name="admin-audit-ai-detail-alias"),
 ]

@@ -74,9 +74,10 @@ class MongoAIAuditRepository:
         available = set()
         if db is not None:
             try:
-                available = set(db.list_collection_names())
-            except PyMongoError as exc:
-                logger.warning("AI audit collection listing failed: %s", exc.__class__.__name__)
+                collections_info = db.command("listCollections", maxTimeMS=5000)
+                available = set(c["name"] for c in collections_info.get("cursor", {}).get("firstBatch", []))
+            except Exception as exc:
+                logger.warning("AI audit collection listing failed: %s", str(exc))
                 mongo_status = _mongo_error_status("No se pudo conectar a MongoDB Atlas para auditoria IA.")
 
         items = []
@@ -86,8 +87,9 @@ class MongoAIAuditRepository:
             exists = name in available
             if db is not None and exists:
                 try:
-                    count = db[name].estimated_document_count()
-                except PyMongoError:
+                    count = db[name].estimated_document_count(maxTimeMS=3000)
+                except Exception as exc:
+                    logger.warning("AI audit count failed for %s: %s", name, str(exc))
                     count = None
             items.append({
                 "collection": name,
@@ -161,14 +163,14 @@ class MongoAIAuditRepository:
 
         try:
             query_id = ObjectId(raw_id) if ObjectId.is_valid(raw_id) else raw_id
-            doc = db[collection_name].find_one({"_id": query_id})
+            doc = db[collection_name].find_one({"_id": query_id}, max_time_ms=5000)
             if doc is None:
-                doc = db[collection_name].find_one({"_id": raw_id})
+                doc = db[collection_name].find_one({"_id": raw_id}, max_time_ms=5000)
             if not doc:
                 return None
             return _public_event(self._normalize_doc(collection_name, doc), include_details=True)
-        except PyMongoError as exc:
-            logger.warning("AI audit detail read failed: %s", exc.__class__.__name__)
+        except Exception as exc:
+            logger.warning("AI audit detail read failed: %s", str(exc))
             return None
 
     def export_events(self, query_params):
@@ -230,7 +232,8 @@ class MongoAIAuditRepository:
             return [], mongo_status
 
         try:
-            available = set(db.list_collection_names())
+            collections_info = db.command("listCollections", maxTimeMS=5000)
+            available = set(c["name"] for c in collections_info.get("cursor", {}).get("firstBatch", []))
             selected_collections = self._selected_collections(params)
             events = []
             for collection_name in selected_collections:
@@ -243,12 +246,13 @@ class MongoAIAuditRepository:
                     .find({})
                     .sort([(sort_field, -1), ("_id", -1)])
                     .limit(self.FETCH_LIMIT_PER_COLLECTION)
+                    .max_time_ms(5000)
                 )
                 for doc in cursor:
                     events.append(self._normalize_doc(collection_name, doc))
             return events, mongo_status
-        except (MongoConfigurationError, PyMongoError) as exc:
-            logger.warning("AI audit Mongo read failed: %s", exc.__class__.__name__)
+        except Exception as exc:
+            logger.warning("AI audit Mongo read failed: %s", str(exc))
             return [], _mongo_error_status("No se pudo conectar a MongoDB Atlas para auditoria IA.")
 
     def _database_or_none(self):

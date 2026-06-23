@@ -17,7 +17,7 @@ def get_mongo_client():
     uri = _configured_mongo_uri()
     if _is_local_mongo_uri(uri) and not _allow_local_mongo():
         raise MongoConfigurationError("MongoDB Atlas no esta configurado para auditoria IA. Revisa MONGODB_URI.")
-    return MongoClient(uri, serverSelectionTimeoutMS=5000)
+    return MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000, socketTimeoutMS=5000)
 
 
 @lru_cache(maxsize=1)
