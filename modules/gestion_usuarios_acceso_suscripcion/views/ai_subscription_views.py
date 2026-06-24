@@ -25,7 +25,10 @@ from ..services.payment_callback_service import PaymentCallbackService
 
 
 def success_response(message, data=None, http_status=status.HTTP_200_OK):
-    return Response({"success": True, "message": message, "data": data or {}}, status=http_status)
+    return Response(
+        {"success": True, "message": message, "data": data if data is not None else {}},
+        status=http_status,
+    )
 
 
 def error_response(message, code, details="", http_status=status.HTTP_400_BAD_REQUEST):

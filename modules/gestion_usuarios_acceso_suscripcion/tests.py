@@ -317,6 +317,22 @@ class AISubscriptionSandboxPaymentTests(TestCase):
         self.assertFalse(response.data["success"])
         self.assertEqual(response.data["error"]["code"], "AI_SUBSCRIPTION_REQUIRED")
 
+    def test_subscription_status_without_active_subscription_is_valid_state(self):
+        response = self.client.get("/api/ia/subscription/status/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertIsNone(response.data["data"]["subscription"])
+        self.assertFalse(response.data["data"]["can_use_ai"])
+        self.assertEqual(response.data["data"]["limits"], {})
+
+    def test_payment_history_without_payments_returns_empty_list(self):
+        response = self.client.get("/api/ia/subscription/payments/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["data"], [])
+
 
 class IAAccessServiceTests(TestCase):
     def setUp(self):
