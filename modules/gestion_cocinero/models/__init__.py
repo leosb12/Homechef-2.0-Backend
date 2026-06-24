@@ -150,3 +150,21 @@ class DailyMenuItem(models.Model):
         return f"{self.dish.name} in {self.menu_id}"
 
 from .inventory import InventoryItem, DishIngredient, StockMovement
+
+# --- Caching invalidation signals ---
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from django.core.cache import cache
+import time
+
+@receiver(post_save, sender=Dish)
+@receiver(post_delete, sender=Dish)
+def invalidate_public_dashboard_cache(sender, instance, **kwargs):
+    try:
+        # Update cache version to invalidate all public dashboard keys at once
+        version = int(time.time())
+        cache.set('marketplace:public_dashboard:version', version, timeout=None)
+    except Exception:
+        # Failsafe: ensure signal error does not block database operations
+        pass
+

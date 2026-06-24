@@ -26,12 +26,42 @@ def public_dashboard(request):
         if location_available == "false":
             latitude = ""
             longitude = ""
+        
+        # --- Caching implementation start ---
+        from django.core.cache import cache
+        import time
+
+        cache_key = None
+        try:
+            version = cache.get('marketplace:public_dashboard:version')
+            if not version:
+                version = int(time.time())
+                cache.set('marketplace:public_dashboard:version', version, timeout=None)
+            
+            cache_key = f"marketplace:public_dashboard:v{version}:lat={latitude}:lon={longitude}:loc={location_available}"
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                return Response(cached_data, status=status.HTTP_200_OK)
+        except Exception:
+            # Fallback if cache fails
+            cache_key = None
+        # --- Caching implementation end ---
+
         payload = PublicDashboardService().get_public_dashboard(
             latitude=latitude,
             longitude=longitude,
         )
         serializer = PublicDashboardResponseSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
+
+        # --- Save to cache start ---
+        if cache_key is not None:
+            try:
+                cache.set(cache_key, serializer.validated_data, timeout=300)
+            except Exception:
+                pass
+        # --- Save to cache end ---
+
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
     except Exception:
         return Response(

@@ -172,3 +172,11 @@ FRONTEND_PUBLIC_BASE_URL = os.getenv(
     'FRONTEND_PUBLIC_BASE_URL',
     'https://homechef-2-0-frontend.vercel.app',
 )
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'homechef-locmem-cache',
+    }
+}
+
